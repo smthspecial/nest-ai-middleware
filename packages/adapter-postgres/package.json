@@ -1,0 +1,36 @@
+{
+  "name": "nestjs-ai-middleware-adapter-postgres",
+  "version": "0.3.0",
+  "description": "Postgres storage adapter for NestJS AI middleware",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": "^26.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "nestjs-ai-middleware": "^0.3.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "nestjs-ai-middleware": "0.3.0"
+  },
+  "dependencies": {
+    "@types/pg": "^8.23.1"
+  }
+}

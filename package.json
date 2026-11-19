@@ -1,0 +1,32 @@
+{
+  "name": "nest-ai-middleware-workspace",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "packageManager": "npm@11.20.0",
+  "engines": {
+    "node": "^26.0.0"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "pack:packages": "npm run build && npm pack --workspaces"
+  },
+  "devDependencies": {
+    "@jest/globals": "^30.5.2",
+    "@nestjs/common": "^12.5.1",
+    "@nestjs/core": "^12.5.1",
+    "@nestjs/testing": "^12.5.1",
+    "@types/node": "^26.6.6",
+    "jest": "^30.5.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "typescript": "^7.0.2",
+    "turbo": "^2.11.13",
+    "@types/pg": "^8.23.1"
+  }
+}

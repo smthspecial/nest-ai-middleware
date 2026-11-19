@@ -1,0 +1,12 @@
+/node_modules/
+/dist/
+/.test-build/
+/coverage/
+/*.tgz
+/data/*.sqlite
+/data/*.sqlite-*
+/.turbo/
+/packages/*/dist/
+/packages/*/.test-build/
+/packages/*/.turbo/
+/packages/*/node_modules/
