@@ -3,11 +3,13 @@
 Use an existing host-managed `pg.Pool`. The adapter stores only plugin records in the `nest_ai_middleware` schema. The adapter never selects from application schemas.
 
 ```ts
-import { PostgresDatabaseAdapter } from 'nestjs-ai-middleware-adapter-postgres';
+import { PostgresDatabaseAdapter } from "nestjs-ai-middleware-adapter-postgres";
 
 const adapter = new PostgresDatabaseAdapter(pool);
 await adapter.initialize();
 const database = { adapter }; // Pass this to AiModule.forRoot() or forRootAsync().
 ```
 
-Run `initialize()` with a role that can create the plugin schema and tables. An application using a separate runtime role should grant it access to the plugin schema. The host controls pooling, timeouts, authentication, and shutdown. Each lease transaction uses a single checked-out client. [node-postgres transactions](https://node-postgres.com/features/transactions)
+`initialize()` applies pending migrations in a transaction and records them in `nest_ai_middleware.schema_migrations`. Existing middleware schemas are upgraded in place. Concurrent initializations serialize using a PostgreSQL advisory lock. [PostgreSQL advisory locks](https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS)
+
+Run `initialize()` with a role that can create the plugin schema and modify its tables and indexes. If you use a separate runtime role, run `initialize()` as a deployment step before starting the app, then use the adapter with a runtime role that has access to the plugin schema and its data tables. The host controls pooling, timeouts, authentication, and shutdown. Each lease transaction uses a single checked-out client. [node-postgres transactions](https://node-postgres.com/features/transactions)

@@ -2,7 +2,7 @@
 id: TASK-002
 type: task
 title: "Build the explicit tool registry"
-status: todo
+status: done
 created: 2026-11-18
 storyId: US-001
 releaseId: REL-001
@@ -12,4 +12,4 @@ dependsOn: TASK-001
 
 # Build the explicit tool registry
 
-Implement `@AiService()`, `@AiTool()`, `@AiArgs()`, and `@AiPermissions()`. Require every eligibility gate, compile schemas, validate Nest ownership, and reject invalid metadata at bootstrap.
+The registry discovers explicitly decorated methods on Nest class providers. It compiles object schemas and validates tool names, declarations, and provider ownership during bootstrap. [Tool registry](../../../packages/core/src/config/ai-tool-registry.ts).

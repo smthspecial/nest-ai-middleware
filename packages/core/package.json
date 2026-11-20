@@ -6,8 +6,7 @@
     "nestjs",
     "ai",
     "tool-calling",
-    "sqlite",
-    "pubsub"
+    "sqlite"
   ],
   "type": "module",
   "exports": {
@@ -40,6 +39,8 @@
     "rxjs": "^7.8.0"
   },
   "dependencies": {
+    "@ai-sdk/provider": "^4.0.39",
+    "@types/json-schema": "^7.0.15",
     "ajv": "^8.20.0"
   }
 }

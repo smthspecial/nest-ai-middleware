@@ -1,8 +1,17 @@
-import type { ClientSession, Collection, MongoClient } from 'mongodb';
+import type { ClientSession, Collection, MongoClient } from "mongodb";
 import type {
-  AiCaller, AiConversationSession, AiConversationTurnQuery, AiConversationTurnRecord,
-  AiDatabaseAdapter, AiRunEventRecord, AiRunOutcome, AiRunPage,
-} from 'nestjs-ai-middleware';
+  AiCaller,
+  AiConversationListQuery,
+  AiConversationSession,
+  AiConversationSummary,
+  AiConversationTurnQuery,
+  AiConversationTurnRecord,
+  AiDatabaseAdapter,
+  AiRunEventRecord,
+  AiRunOutcome,
+  AiRunPage,
+} from "nestjs-ai-middleware";
+import { applyMongoMigrations } from "./migrations.js";
 
 interface SessionDocument {
   _id: string;
@@ -21,7 +30,7 @@ interface TurnDocument extends AiConversationTurnRecord {
 interface RunDocument {
   _id: string;
   sessionId: string | null;
-  status: 'running' | AiRunOutcome;
+  status: "running" | AiRunOutcome;
   startedAt: number;
   finishedAt?: number;
   errorCode?: string;
@@ -36,12 +45,16 @@ interface RunEventDocument {
 }
 
 const eventPageSize = 50;
-const majority = { w: 'majority' } as const;
+const majority = { w: "majority" } as const;
 const bookkeepingOptions = { timeoutMS: 100, writeConcern: majority };
 const leaseOptions = { timeoutMS: 5000, writeConcern: majority };
 
 function sessionOwner({ id, caller }: AiConversationSession) {
-  return { _id: id, subjectId: caller.subjectId, tenantId: caller.tenantId ?? null };
+  return {
+    _id: id,
+    subjectId: caller.subjectId,
+    tenantId: caller.tenantId ?? null,
+  };
 }
 
 export class MongoDatabaseAdapter implements AiDatabaseAdapter {
@@ -50,126 +63,352 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
   private readonly runs: Collection<RunDocument>;
   private readonly events: Collection<RunEventDocument>;
 
-  constructor(private readonly client: MongoClient, databaseName: string) {
-    if (typeof databaseName !== 'string' || !databaseName.trim()) throw new TypeError('A MongoDB database name is required.');
-    const db = client.db(databaseName, { readPreference: 'primary' });
-    this.sessions = db.collection('nest_ai_chat_sessions');
-    this.turns = db.collection('nest_ai_chat_turns');
-    this.runs = db.collection('nest_ai_runs');
-    this.events = db.collection('nest_ai_run_events');
+  constructor(
+    private readonly client: MongoClient,
+    private readonly databaseName: string,
+  ) {
+    if (typeof databaseName !== "string" || !databaseName.trim())
+      throw new TypeError("A MongoDB database name is required.");
+    const db = client.db(databaseName, { readPreference: "primary" });
+    this.sessions = db.collection("nest_ai_chat_sessions");
+    this.turns = db.collection("nest_ai_chat_turns");
+    this.runs = db.collection("nest_ai_runs");
+    this.events = db.collection("nest_ai_run_events");
   }
 
   async initialize(): Promise<void> {
-    await this.turns.createIndex({ sessionId: 1, position: 1 }, { unique: true });
-    await this.runs.createIndex({ sessionId: 1, startedAt: 1 });
-    await this.events.createIndex({ runId: 1, sequence: 1 }, { unique: true });
-    await this.events.createIndex({ invocationId: 1 }, { unique: true, partialFilterExpression: { invocationId: { $type: 'string' } } });
+    await applyMongoMigrations(
+      this.client.db(this.databaseName, {
+        readPreference: "primary",
+        writeConcern: majority,
+      }),
+    );
   }
 
-  async beginConversation({ session, runId, create, leaseUntil }: Parameters<AiDatabaseAdapter['beginConversation']>[0], signal: AbortSignal) {
+  async beginConversation(
+    {
+      session,
+      runId,
+      create,
+      leaseUntil,
+    }: Parameters<AiDatabaseAdapter["beginConversation"]>[0],
+    signal: AbortSignal,
+  ) {
     signal.throwIfAborted();
     const owner = sessionOwner(session);
     if (create) {
-      await this.sessions.insertOne({ ...owner, turnCount: 0, leaseId: runId, leaseUntil }, leaseOptions);
-      return { status: 'ready' } as const;
+      await this.sessions.insertOne(
+        { ...owner, turnCount: 0, leaseId: runId, leaseUntil },
+        leaseOptions,
+      );
+      return { status: "ready" } as const;
     }
-    const claim = await this.sessions.updateOne({
-      ...owner, $or: [{ leaseId: null }, { leaseUntil: { $lte: Date.now() } }],
-    }, { $set: { leaseId: runId, leaseUntil } }, leaseOptions);
-    if (claim.matchedCount) return { status: 'ready' } as const;
-    const exists = await this.sessions.findOne(owner, { projection: { _id: 1 }, signal });
-    return { status: exists ? 'busy' : 'unavailable' } as const;
+    const claim = await this.sessions.updateOne(
+      {
+        ...owner,
+        $or: [{ leaseId: null }, { leaseUntil: { $lte: Date.now() } }],
+      },
+      { $set: { leaseId: runId, leaseUntil } },
+      leaseOptions,
+    );
+    if (claim.matchedCount) return { status: "ready" } as const;
+    const exists = await this.sessions.findOne(owner, {
+      projection: { _id: 1 },
+      signal,
+    });
+    return { status: exists ? "busy" : "unavailable" } as const;
   }
 
-  async finishConversation({ session, runId, turn, discardIfEmpty }: Parameters<AiDatabaseAdapter['finishConversation']>[0], signal: AbortSignal): Promise<void> {
+  async finishConversation(
+    {
+      session,
+      runId,
+      turn,
+      discardIfEmpty,
+    }: Parameters<AiDatabaseAdapter["finishConversation"]>[0],
+    signal: AbortSignal,
+  ): Promise<void> {
     const lease = { ...sessionOwner(session), leaseId: runId };
-    await this.transaction(signal, async transaction => {
+    await this.transaction(signal, async (transaction) => {
       const options = { session: transaction };
       const current = await this.sessions.findOne(lease, options);
       if (!current) {
-        if (turn) throw new Error('Conversation lease is unavailable.');
+        if (turn) throw new Error("Conversation lease is unavailable.");
         return;
       }
       if (discardIfEmpty && current.turnCount === 0) {
-        await this.runs.updateMany({ sessionId: session.id }, { $set: { sessionId: null } }, options);
+        await this.runs.updateMany(
+          { sessionId: session.id },
+          { $set: { sessionId: null } },
+          options,
+        );
         await this.sessions.deleteOne(lease, options);
         return;
       }
       if (turn) {
-        await this.turns.insertOne({
-          ...turn, _id: turn.id, sessionId: session.id, position: current.turnCount + 1,
-        }, options);
+        await this.turns.insertOne(
+          {
+            ...turn,
+            _id: turn.id,
+            sessionId: session.id,
+            position: current.turnCount + 1,
+          },
+          options,
+        );
       }
-      await this.sessions.updateOne(lease, {
-        $set: { leaseId: null, leaseUntil: null, turnCount: current.turnCount + (turn ? 1 : 0) },
-      }, options);
+      await this.sessions.updateOne(
+        lease,
+        {
+          $set: {
+            leaseId: null,
+            leaseUntil: null,
+            turnCount: current.turnCount + (turn ? 1 : 0),
+          },
+        },
+        options,
+      );
     });
   }
 
-  async listConversationTurns(session: AiConversationSession, query: AiConversationTurnQuery, signal: AbortSignal): Promise<AiConversationTurnRecord[] | undefined> {
+  async listConversationTurns(
+    session: AiConversationSession,
+    query: AiConversationTurnQuery,
+    signal: AbortSignal,
+  ): Promise<AiConversationTurnRecord[] | undefined> {
     signal.throwIfAborted();
-    if (!await this.sessions.findOne(sessionOwner(session), { projection: { _id: 1 }, signal })) return;
-    const descending = query.order === 'descending';
-    const rows = await this.turns.find({
-      sessionId: session.id,
-      position: {
-        $gt: query.after,
-        ...(descending && query.before !== undefined ? { $lt: query.before } : {}),
-      },
-    }, { signal }).sort({ position: descending ? -1 : 1 }).limit(query.limit).toArray();
+    if (
+      !(await this.sessions.findOne(sessionOwner(session), {
+        projection: { _id: 1 },
+        signal,
+      }))
+    )
+      return;
+    const descending = query.order === "descending";
+    const rows = await this.turns
+      .find(
+        {
+          sessionId: session.id,
+          position: {
+            $gt: query.after,
+            ...(descending && query.before !== undefined
+              ? { $lt: query.before }
+              : {}),
+          },
+        },
+        { signal },
+      )
+      .sort({ position: descending ? -1 : 1 })
+      .limit(query.limit)
+      .toArray();
     return rows.map(({ _id, sessionId: _sessionId, ...turn }) => turn);
   }
 
-  async startRun(runId: string, startedAt: number, signal: AbortSignal): Promise<void> {
+  async listConversations(
+    caller: AiCaller,
+    { before, limit }: AiConversationListQuery,
+    signal: AbortSignal,
+  ): Promise<AiConversationSummary[]> {
     signal.throwIfAborted();
-    await this.runs.insertOne({ _id: runId, sessionId: null, status: 'running', startedAt }, bookkeepingOptions);
+    return this.sessions
+      .aggregate<AiConversationSummary>(
+        [
+          {
+            $match: {
+              subjectId: caller.subjectId,
+              tenantId: caller.tenantId ?? null,
+              turnCount: { $gt: 0 },
+            },
+          },
+          {
+            $lookup: {
+              from: this.turns.collectionName,
+              localField: "_id",
+              foreignField: "sessionId",
+              as: "firstTurn",
+              pipeline: [
+                { $match: { position: 1 } },
+                { $project: { preview: { $substrCP: ["$user", 0, 120] } } },
+              ],
+            },
+          },
+          { $unwind: "$firstTurn" },
+          {
+            $lookup: {
+              from: this.turns.collectionName,
+              localField: "_id",
+              foreignField: "sessionId",
+              as: "lastTurn",
+              let: { lastPosition: "$turnCount" },
+              pipeline: [
+                { $match: { $expr: { $eq: ["$position", "$$lastPosition"] } } },
+                { $project: { _id: 1 } },
+              ],
+            },
+          },
+          { $unwind: "$lastTurn" },
+          {
+            $lookup: {
+              from: this.runs.collectionName,
+              localField: "lastTurn._id",
+              foreignField: "_id",
+              as: "lastRun",
+              pipeline: [{ $project: { startedAt: 1 } }],
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              sessionId: "$_id",
+              preview: "$firstTurn.preview",
+              updatedAt: { $ifNull: [{ $first: "$lastRun.startedAt" }, 0] },
+            },
+          },
+          ...(before
+            ? [
+                {
+                  $match: {
+                    $or: [
+                      { updatedAt: { $lt: before.updatedAt } },
+                      {
+                        updatedAt: before.updatedAt,
+                        sessionId: { $lt: before.sessionId },
+                      },
+                    ],
+                  },
+                },
+              ]
+            : []),
+          { $sort: { updatedAt: -1, sessionId: -1 } },
+          { $limit: limit },
+        ],
+        { signal },
+      )
+      .toArray();
   }
 
-  async attachRunSession(runId: string, sessionId: string, signal: AbortSignal): Promise<void> {
+  async startRun(
+    runId: string,
+    startedAt: number,
+    signal: AbortSignal,
+  ): Promise<void> {
     signal.throwIfAborted();
-    await this.runs.updateOne({ _id: runId, status: 'running' }, { $set: { sessionId } }, bookkeepingOptions);
+    await this.runs.insertOne(
+      { _id: runId, sessionId: null, status: "running", startedAt },
+      bookkeepingOptions,
+    );
   }
 
-  async appendRunEvent(event: AiRunEventRecord, signal: AbortSignal): Promise<void> {
+  async attachRunSession(
+    runId: string,
+    sessionId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     signal.throwIfAborted();
-    await this.events.insertOne({
-      _id: `${event.runId}:${event.sequence}`, runId: event.runId, sequence: event.sequence,
-      ...(event.kind === 'tool_attempt' ? { invocationId: event.invocationId } : {}), payload: event,
-    }, bookkeepingOptions);
+    await this.runs.updateOne(
+      { _id: runId, status: "running" },
+      { $set: { sessionId } },
+      bookkeepingOptions,
+    );
   }
 
-  async finishRun(runId: string, result: Parameters<AiDatabaseAdapter['finishRun']>[1], signal: AbortSignal): Promise<void> {
+  async appendRunEvent(
+    event: AiRunEventRecord,
+    signal: AbortSignal,
+  ): Promise<void> {
     signal.throwIfAborted();
-    await this.runs.updateOne({ _id: runId, status: 'running' }, { $set: {
-      status: result.outcome, finishedAt: result.finishedAt, ...(result.errorCode !== undefined ? { errorCode: result.errorCode } : {}),
-    } }, bookkeepingOptions);
+    await this.events.insertOne(
+      {
+        _id: `${event.runId}:${event.sequence}`,
+        runId: event.runId,
+        sequence: event.sequence,
+        ...(event.kind === "tool_attempt"
+          ? { invocationId: event.invocationId }
+          : {}),
+        payload: event,
+      },
+      bookkeepingOptions,
+    );
   }
 
-  async readRun(runId: string, caller: AiCaller, after: number, signal: AbortSignal): Promise<AiRunPage | undefined> {
+  async finishRun(
+    runId: string,
+    result: Parameters<AiDatabaseAdapter["finishRun"]>[1],
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    await this.runs.updateOne(
+      { _id: runId, status: "running" },
+      {
+        $set: {
+          status: result.outcome,
+          finishedAt: result.finishedAt,
+          ...(result.errorCode !== undefined
+            ? { errorCode: result.errorCode }
+            : {}),
+        },
+      },
+      bookkeepingOptions,
+    );
+  }
+
+  async readRun(
+    runId: string,
+    caller: AiCaller,
+    after: number,
+    signal: AbortSignal,
+  ): Promise<AiRunPage | undefined> {
     signal.throwIfAborted();
     const run = await this.runs.findOne({ _id: runId }, { signal });
-    if (!run?.sessionId || !await this.sessions.findOne(sessionOwner({ id: run.sessionId, caller }), {
-      projection: { _id: 1 }, signal,
-    })) return;
-    const output = await this.turns.findOne({ _id: runId, sessionId: run.sessionId }, { projection: { assistant: 1 }, signal });
-    const rows = await this.events.find({ runId, sequence: { $gt: after } }, { signal })
-      .sort({ sequence: 1 }).limit(eventPageSize + 1).toArray();
-    const events = rows.slice(0, eventPageSize).map(row => row.payload);
+    if (
+      !run?.sessionId ||
+      !(await this.sessions.findOne(
+        sessionOwner({ id: run.sessionId, caller }),
+        {
+          projection: { _id: 1 },
+          signal,
+        },
+      ))
+    )
+      return;
+    const output = await this.turns.findOne(
+      { _id: runId, sessionId: run.sessionId },
+      { projection: { assistant: 1 }, signal },
+    );
+    const rows = await this.events
+      .find({ runId, sequence: { $gt: after } }, { signal })
+      .sort({ sequence: 1 })
+      .limit(eventPageSize + 1)
+      .toArray();
+    const events = rows.slice(0, eventPageSize).map((row) => row.payload);
     return {
-      runId, sessionId: run.sessionId, status: run.status, startedAt: run.startedAt,
+      runId,
+      sessionId: run.sessionId,
+      status: run.status,
+      startedAt: run.startedAt,
       ...(run.finishedAt !== undefined ? { finishedAt: run.finishedAt } : {}),
       ...(run.errorCode !== undefined ? { errorCode: run.errorCode } : {}),
-      ...(output ? { output: output.assistant } : {}), events,
-      ...(rows.length > eventPageSize ? { nextAfter: events[events.length - 1].sequence } : {}),
+      ...(output ? { output: output.assistant } : {}),
+      events,
+      ...(rows.length > eventPageSize
+        ? { nextAfter: events[events.length - 1].sequence }
+        : {}),
     };
   }
 
-  private transaction<T>(signal: AbortSignal, work: (session: ClientSession) => Promise<T>): Promise<T> {
-    return this.client.withSession(session => session.withTransaction(async () => {
-      signal.throwIfAborted();
-      const result = await work(session);
-      signal.throwIfAborted();
-      return result;
-    }, { timeoutMS: 5000, writeConcern: majority }));
+  private transaction<T>(
+    signal: AbortSignal,
+    work: (session: ClientSession) => Promise<T>,
+  ): Promise<T> {
+    return this.client.withSession((session) =>
+      session.withTransaction(
+        async () => {
+          signal.throwIfAborted();
+          const result = await work(session);
+          signal.throwIfAborted();
+          return result;
+        },
+        { timeoutMS: 5000, writeConcern: majority },
+      ),
+    );
   }
 }

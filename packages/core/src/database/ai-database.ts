@@ -1,8 +1,8 @@
-import { Inject, Injectable } from '@nestjs/common';
-import type { OnModuleDestroy } from '@nestjs/common';
-import { AI_MODULE_OPTIONS } from '../config/validate-options.js';
-import type { ValidatedAiModuleOptions } from '../config/validate-options.js';
-import type { AiDatabaseAdapter } from '../contracts/ai-database.js';
+import { Inject, Injectable } from "@nestjs/common";
+import type { OnModuleDestroy } from "@nestjs/common";
+import { AI_MODULE_OPTIONS } from "../config/validate-options.js";
+import type { ValidatedAiModuleOptions } from "../config/validate-options.js";
+import type { AiDatabaseAdapter } from "../contracts/ai-database.js";
 
 @Injectable()
 export class AiDatabase implements OnModuleDestroy {

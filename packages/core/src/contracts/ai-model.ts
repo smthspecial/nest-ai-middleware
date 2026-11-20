@@ -1,4 +1,5 @@
-import type { JsonObject, JsonValue } from './json.types.js';
+import type { JsonObject, JsonValue } from "./json.types.js";
+import type { AiAttachment } from "./ai-attachment.js";
 
 export interface AiToolDefinition {
   readonly id?: string;
@@ -18,17 +19,22 @@ export interface AiToolCall {
 }
 
 export type AiToolResult =
-  | { ok: true; data: JsonValue }
-  | { ok: false; code: string };
+  { ok: true; data: JsonValue } | { ok: false; code: string };
 
 export type AiMessage =
-  | { role: 'system' | 'user'; content: string }
-  | { role: 'assistant'; content?: string; toolCalls?: readonly AiToolCall[] }
-  | { role: 'tool'; callId: string; name: string; result: AiToolResult };
+  | { role: "system" | "user"; content: string }
+  | {
+      role: "assistant";
+      content?: string;
+      toolCalls?: readonly AiToolCall[];
+      continuation?: JsonValue;
+    }
+  | { role: "tool"; callId: string; name: string; result: AiToolResult };
 
 export interface AiModelRequest {
   readonly messages: readonly AiMessage[];
   readonly tools: readonly AiToolDefinition[];
+  readonly attachments?: readonly AiAttachment[];
   readonly abortSignal?: AbortSignal;
   readonly responseSchema?: JsonObject;
 }
@@ -39,8 +45,14 @@ export interface AiUsage {
 }
 
 export type AiModelResponse = (
-  | { kind: 'final'; message: string; structuredOutput?: unknown }
-  | { kind: 'tool-calls'; message?: string; toolCalls: readonly AiToolCall[] }
+  | { kind: "final"; message: string; structuredOutput?: unknown }
+  | {
+      kind: "tool-calls";
+      message?: string;
+      toolCalls: readonly AiToolCall[];
+      /** JSON data replayed to this adapter during the current run. */
+      continuation?: JsonValue;
+    }
 ) & { usage?: AiUsage };
 
 export interface AiModel {
@@ -51,7 +63,10 @@ export interface AiModel {
   generate(request: AiModelRequest): Promise<AiModelResponse>;
 }
 
-export type AiToolOptions = AiToolDefinition & (
-  | { readonly readOnly: true; readonly operation?: 'get' }
-  | { readonly readOnly: false; readonly operation: 'create' | 'update' }
-);
+export type AiToolOptions = AiToolDefinition &
+  (
+    | { readonly readOnly: true; readonly operation?: "get" }
+    | { readonly readOnly: false; readonly operation: "create" | "update" }
+  );
+
+export type AiToolOperation = NonNullable<AiToolOptions["operation"]>;

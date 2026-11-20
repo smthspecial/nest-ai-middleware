@@ -12,4 +12,4 @@ dependsOn: TASK-010,TASK-014
 
 # Export bounded telemetry and qualify additional adapters
 
-Document sanitized metrics and traces and test supported runtime and HTTP adapter combinations with the same guard and request-scope requirements.
+Define content-free metrics and traces, qualify additional runtime and HTTP configurations, and exercise the MongoDB adapter against a replica set. Cover migrations, session leases, restart, and owner-scoped reads. [TP-002](../../technical/test-plans/tp-002.md).

@@ -1,5 +1,6 @@
-import type { AiConversationTurn } from './ai-conversation.js';
-import type { JsonValue } from './json.types.js';
+import type { AiConversationTurn } from "./ai-conversation.js";
+import type { JsonValue } from "./json.types.js";
+import type { AiAttachment } from "./ai-attachment.js";
 
 export interface AiRunResult {
   readonly message: string;
@@ -10,8 +11,15 @@ export interface AiRunResult {
 }
 
 export interface AiRunOptions {
+  readonly attachments?: readonly AiAttachment[];
   readonly history?: readonly AiConversationTurn[];
   readonly sessionId?: string;
-  readonly onToolResult?: (result: { name: string; toolId: string; invocationId: string; data: JsonValue }) => void;
+  /** Lets the calling backend use a screened tool result while building this run's response. */
+  readonly onToolResult?: (result: {
+    name: string;
+    toolId: string;
+    invocationId: string;
+    data: JsonValue;
+  }) => void;
   readonly presentAnswer?: (result: AiRunResult) => string;
 }

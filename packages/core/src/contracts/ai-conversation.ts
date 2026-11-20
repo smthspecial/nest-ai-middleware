@@ -1,4 +1,4 @@
-import type { AiCaller } from './ai-authorization-policy.js';
+import type { AiCaller } from "./ai-execution-context.js";
 
 export interface AiConversationTurn {
   readonly user: string;
@@ -19,8 +19,8 @@ export type AiConversationTurnQuery = {
   readonly after: number;
   readonly limit: number;
 } & (
-  | { readonly order: 'ascending' }
-  | { readonly order: 'descending'; readonly before?: number }
+  | { readonly order: "ascending" }
+  | { readonly order: "descending"; readonly before?: number }
 );
 
 export interface AiConversationSession {
@@ -33,3 +33,19 @@ export interface AiConversationPage {
   readonly nextAfter?: number;
 }
 
+export interface AiConversationSummary {
+  readonly sessionId: string;
+  readonly preview: string;
+  /** Start time of the last saved turn's run, or zero when bookkeeping is unavailable. */
+  readonly updatedAt: number;
+}
+
+export interface AiConversationListQuery {
+  readonly before?: Pick<AiConversationSummary, "sessionId" | "updatedAt">;
+  readonly limit: number;
+}
+
+export interface AiConversationListPage {
+  readonly conversations: readonly AiConversationSummary[];
+  readonly nextAfter?: string;
+}

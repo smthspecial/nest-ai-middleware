@@ -12,4 +12,4 @@ dependsOn: TASK-009
 
 # Compose safe structured response blocks
 
-Validate the block union, limits, and chart and table data. Cover optional structured model output and safe renderer fallback without exposing executable frontend content.
+Define and validate a shared response-block contract for text, lists, tables, charts, entities, and data. Cover size limits and text fallback. The retail app already renders host-defined charts from tool results. [FR-006](../../requirements/fr/fr-006.md).

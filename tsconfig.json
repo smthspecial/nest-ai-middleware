@@ -2,9 +2,7 @@
   "compilerOptions": {
     "target": "ES2024",
     "module": "NodeNext",
-    "types": [
-      "node"
-    ],
+    "types": ["node"],
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,

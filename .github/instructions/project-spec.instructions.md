@@ -8,13 +8,13 @@ This workspace uses the **Project Spec** VS Code extension. All project document
 
 ## Available language model tools
 
-| Tool | Purpose |
-|------|---------|
-| `project-spec_get-schema` | Front-matter fields, directory, and body template for a type — call before creating or editing any file |
-| `project-spec_read-spec` | Read all spec items across every type |
-| `project-spec_query` | Filter spec items by `type` and/or `status` |
-| `project-spec_write-file` | Create or overwrite a `.spec/` markdown file |
-| `project-spec_validate-file` | Validate a spec file — always run this after `write-file` |
+| Tool                         | Purpose                                                                                                 |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `project-spec_get-schema`    | Front-matter fields, directory, and body template for a type — call before creating or editing any file |
+| `project-spec_read-spec`     | Read all spec items across every type                                                                   |
+| `project-spec_query`         | Filter spec items by `type` and/or `status`                                                             |
+| `project-spec_write-file`    | Create or overwrite a `.spec/` markdown file                                                            |
+| `project-spec_validate-file` | Validate a spec file — always run this after `write-file`                                               |
 
 ## Creating or editing an item
 
@@ -25,26 +25,26 @@ This workspace uses the **Project Spec** VS Code extension. All project document
 
 ## TYPE REGISTRY — the only 18 valid document types
 
-| `type` | `id` prefix | Directory under `.spec/` | File name | Valid `status` values |
-|--------|-------------|--------------------------|-----------|----------------------|
-| `epic` | `EPIC-NNN` | `backlog/epics/` | `epic-NNN.md` | `draft` · `active` · `done` |
-| `story` | `US-NNN` | `backlog/stories/` | `us-NNN.md` | `draft` · `active` · `done` |
-| `task` | `TASK-NNN` | `backlog/tasks/` | `task-NNN.md` | `todo` · `in-progress` · `testing` · `blocked` · `done` |
-| `bug` | `BUG-NNN` | `backlog/tasks/` | `bug-NNN.md` | `todo` · `in-progress` · `testing` · `blocked` · `done` |
-| `fr` | `FR-NNN` | `requirements/fr/` | `fr-NNN.md` | `draft` · `active` · `deprecated` |
-| `nfr` | `NFR-NNN` | `requirements/nfr/` | `nfr-NNN.md` | `draft` · `active` · `deprecated` |
-| `sprint` | `SPR-NNN` | `planning/sprints/` | `spr-NNN.md` | `planned` · `active` · `done` |
-| `release` | `REL-NNN` | `planning/releases/` | `rel-NNN.md` | `draft` · `active` · `released` |
-| `adr` | `ADR-NNN` | `technical/adr/` | `adr-NNN.md` | `proposed` · `accepted` · `deprecated` · `superseded` |
-| `arch` | `ARCH-NNN` | `technical/arch/` | `arch-NNN.md` | `draft` · `active` · `deprecated` |
-| `service` | `SRV-NNN` | `technical/services/` | `srv-NNN.md` | `draft` · `active` · `deprecated` |
-| `data-proc` | `DP-NNN` | `technical/data-processes/` | `dp-NNN.md` | `draft` · `active` · `deprecated` |
-| `db-table` | `TBL-NNN` | `technical/database/` | `tbl-NNN.md` | `draft` · `active` · `done` |
-| `cicd` | `CICD-NNN` | `technical/cicd/` | `cicd-NNN.md` | `draft` · `active` · `deprecated` |
-| `auth-spec` | `AUTH-NNN` | `technical/auth/` | `auth-NNN.md` | `draft` · `active` · `deprecated` |
-| `test-plan` | `TP-NNN` | `technical/test-plans/` | `tp-NNN.md` | `draft` · `active` · `deprecated` |
-| `member` | `MBR-NNN` | `team/members/` | `mbr-NNN.md` | `active` · `draft` |
-| `concept` | `CON-NNN` | `concept/{section}/` | `con-NNN.md` | `draft` · `active` · `deprecated` |
+| `type`      | `id` prefix | Directory under `.spec/`    | File name     | Valid `status` values                                   |
+| ----------- | ----------- | --------------------------- | ------------- | ------------------------------------------------------- |
+| `epic`      | `EPIC-NNN`  | `backlog/epics/`            | `epic-NNN.md` | `draft` · `active` · `done`                             |
+| `story`     | `US-NNN`    | `backlog/stories/`          | `us-NNN.md`   | `draft` · `active` · `done`                             |
+| `task`      | `TASK-NNN`  | `backlog/tasks/`            | `task-NNN.md` | `todo` · `in-progress` · `testing` · `blocked` · `done` |
+| `bug`       | `BUG-NNN`   | `backlog/tasks/`            | `bug-NNN.md`  | `todo` · `in-progress` · `testing` · `blocked` · `done` |
+| `fr`        | `FR-NNN`    | `requirements/fr/`          | `fr-NNN.md`   | `draft` · `active` · `deprecated`                       |
+| `nfr`       | `NFR-NNN`   | `requirements/nfr/`         | `nfr-NNN.md`  | `draft` · `active` · `deprecated`                       |
+| `sprint`    | `SPR-NNN`   | `planning/sprints/`         | `spr-NNN.md`  | `planned` · `active` · `done`                           |
+| `release`   | `REL-NNN`   | `planning/releases/`        | `rel-NNN.md`  | `draft` · `active` · `released`                         |
+| `adr`       | `ADR-NNN`   | `technical/adr/`            | `adr-NNN.md`  | `proposed` · `accepted` · `deprecated` · `superseded`   |
+| `arch`      | `ARCH-NNN`  | `technical/arch/`           | `arch-NNN.md` | `draft` · `active` · `deprecated`                       |
+| `service`   | `SRV-NNN`   | `technical/services/`       | `srv-NNN.md`  | `draft` · `active` · `deprecated`                       |
+| `data-proc` | `DP-NNN`    | `technical/data-processes/` | `dp-NNN.md`   | `draft` · `active` · `deprecated`                       |
+| `db-table`  | `TBL-NNN`   | `technical/database/`       | `tbl-NNN.md`  | `draft` · `active` · `done`                             |
+| `cicd`      | `CICD-NNN`  | `technical/cicd/`           | `cicd-NNN.md` | `draft` · `active` · `deprecated`                       |
+| `auth-spec` | `AUTH-NNN`  | `technical/auth/`           | `auth-NNN.md` | `draft` · `active` · `deprecated`                       |
+| `test-plan` | `TP-NNN`    | `technical/test-plans/`     | `tp-NNN.md`   | `draft` · `active` · `deprecated`                       |
+| `member`    | `MBR-NNN`   | `team/members/`             | `mbr-NNN.md`  | `active` · `draft`                                      |
+| `concept`   | `CON-NNN`   | `concept/{section}/`        | `con-NNN.md`  | `draft` · `active` · `deprecated`                       |
 
 `NNN` = zero-padded 3-digit number (001, 002, …). For `concept`, `{section}` ∈ `history` · `goals` · `principles` · `risks` · `sysdesign` · `sysimpl`.
 

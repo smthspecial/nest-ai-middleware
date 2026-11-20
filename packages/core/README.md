@@ -1,6 +1,14 @@
 # NestJS AI Middleware
 
-A reusable NestJS module shaped around a host-provided model, a service allowlist, and a host authorization policy. The module validates allowlisted tool calls, resolves registered Nest services and runs a bounded model loop. A host controller can call `AiOrchestrator.run()` with a verified caller and a Nest context ID.
+A reusable NestJS module for calling decorated tools on the host's existing Nest services. Inject `AiChatService` to send a message, list or read saved conversations, and read stored run records. The host supplies a verified caller and passes its Nest request context for tool execution.
+
+## How a message runs
+
+1. At startup, the host imports `AiModule.forRoot(...)`. The middleware discovers tool methods by their `@AiTool()` decorator on existing Nest class providers.
+2. A host controller authenticates the request and calls `AiChatService.sendMessage()` with the message, verified caller, and original Nest request context. Pass a `sessionId` to resume a saved conversation.
+3. For a resumed conversation, the middleware loads all saved turns in order. It gives the configured model the tool definitions whose service and method guards allow the caller. The model can answer directly or ask for a tool call with structured arguments.
+4. The middleware validates the arguments and checks the guards again before invoking the existing Nest provider. It returns each tool result to the model, which can answer or request another tool. Tool calls run sequentially.
+5. `sendMessage()` returns the answer and run ID. With a storage adapter configured, it also returns a session ID and saves the accepted exchange and run records. Backend services can retrieve those records through `AiChatService`.
 
 ## Development
 
@@ -8,6 +16,7 @@ Use Node.js 26 and npm. From the workspace root, run the following commands. The
 
 ```sh
 npm ci
+npm run format:check
 npm run typecheck
 npm test
 npm run build
@@ -18,14 +27,16 @@ npm run pack:packages
 
 ## Register the module
 
+Apply any message and upload limits in the host before calling `AiChatService.sendMessage()`.
+
 ```ts
-import { Module } from '@nestjs/common';
-import { AiModule, type AiModel } from 'nestjs-ai-middleware';
+import { Module } from "@nestjs/common";
+import { AiModule, type AiModel } from "nestjs-ai-middleware";
 
 const model: AiModel = {
   capabilities: { toolCalling: false },
   async generate() {
-    return { kind: 'final', message: 'Offline model reply' };
+    return { kind: "final", message: "Offline model reply" };
   },
 };
 
@@ -33,22 +44,129 @@ const model: AiModel = {
   imports: [
     AiModule.forRoot({
       model,
-      services: [],
-      authorization: { canExecute: () => false },
     }),
   ],
 })
 export class AppModule {}
 ```
 
-Use `AiModule.forRootAsync({ imports, inject, useFactory })` when Nest providers supply the model or policy. Host modules export the tokens listed in `inject`. Both registration methods validate their configuration during bootstrap. `execution.toolTimeoutMs` defaults to 10,000 milliseconds.
+Use `AiModule.forRootAsync({ imports, inject, useFactory })` when Nest providers supply the model or other dependencies. Host modules export the tokens listed in `inject`. Both registration methods validate their configuration during bootstrap. `execution.toolTimeoutMs` defaults to 10 seconds. Each chat run uses a 30-second deadline and allows up to 10 chat model calls and 20 proposed tool calls. Attachment extraction runs before the chat loop under the same deadline.
+
+When upgrading, transfer existing tool authorization checks to Nest service guards and business methods. Remove the old `services`, `authorization`, and `selectConversationHistory` options and the old class, permission, and argument decorators. Declare tool inputs in `@AiTool()`. Replace any `argumentOrder` configuration with a method that takes one input object.
+
+### Use a Vercel AI SDK model
+
+Install the AI SDK provider package for your model in the host app. Configure the provider with the host's credentials and wrap its V3 or V4 language model in the core `SdkModel` adapter. For example, with `@ai-sdk/openai` installed:
+
+```ts
+import { createOpenAI } from "@ai-sdk/openai";
+import { AiModule, SdkModel } from "nestjs-ai-middleware";
+
+const openai = createOpenAI({ apiKey });
+
+AiModule.forRoot({
+  model: new SdkModel(openai.chat(modelId), {
+    instructions: "Use the catalog tools for product questions.",
+    maxOutputTokens: 2048,
+  }),
+  database: { adapter },
+});
+```
+
+Choose a tool-capable language model for tool use. Set `toolCalling: false` for a text-only model. Pass model-specific settings with `providerOptions` when needed. The adapter supports text generation and application-defined tool calls through the core executor. You can also provide any implementation of `AiModel`.
+
+### Process images and PDFs
+
+Map each accepted full, lowercase MIME type to a file-capable SDK model in `attachmentModels`. Multiple types can share one model. The host decides which files it accepts, checks the file contents, and applies any upload limits.
+
+```ts
+const image = new SdkModel(visionModel, { toolCalling: false });
+const pdf = new SdkModel(documentModel, { toolCalling: false });
+
+AiModule.forRoot({
+  model,
+  attachmentModels: {
+    "image/png": image,
+    "image/jpeg": image,
+    "application/pdf": pdf,
+  },
+});
+
+await chat.sendMessage(
+  "What numbers are shown in this file?",
+  verifiedContext,
+  {
+    attachments: [
+      { mediaType: "application/pdf", data: pdfBytes, filename: "report.pdf" },
+    ],
+  },
+);
+```
+
+Pass validated bytes as a `Uint8Array` or Node `Buffer`, with an optional host-selected filename. Pass an empty message to request a summary when files are attached. Map `AiAttachmentError` to the host's response format.
+
+Each configured attachment model receives the question and its assigned files with an empty tool list. The middleware checks the extracted text when input screening is enabled and includes the notes in the chat model's context. With storage enabled, the accepted turn includes those notes. The uploaded bytes stay in the current request and go to the configured attachment provider. [AI SDK file inputs](https://ai-sdk.dev/docs/foundations/prompts#file-parts)
+
+### Connect an authenticated endpoint
+
+Register an application controller in a module that imports the configured `AiModule` and inject `AiChatService`. Apply the app's authentication and AI access guards, validate the request DTO, and resolve the caller from the authenticated request. Forward the original Nest context so the middleware can resolve request-scoped tools and guards.
+
+```ts
+@Controller("ai")
+@UseGuards(JwtAuthGuard, AiAccessGuard)
+export class AiController {
+  constructor(
+    private readonly ai: AiChatService,
+    private readonly moduleRef: ModuleRef,
+  ) {}
+
+  @Post()
+  async run(
+    @Body() body: ChatRequestDto,
+    @Req() request: object,
+    @Res({ passthrough: true }) response: object,
+  ) {
+    const caller = verifiedCaller(request);
+    if (!caller) throw new UnauthorizedException();
+
+    const contextId = ContextIdFactory.getByRequest(request);
+    this.moduleRef.registerRequestByContextId(request, contextId);
+    return this.ai.sendMessage(
+      body.message,
+      { caller, contextId, http: { request, response } },
+      body.sessionId ? { sessionId: body.sessionId } : {},
+    );
+  }
+}
+```
+
+The DTO, guards, and `verifiedCaller` are application code. The controller owns validation, response mapping, and HTTP cancellation. With persistence enabled, it can return the `sessionId` for subsequent messages.
+
+### Use the middleware from a backend service
+
+Inject `AiChatService` like any other Nest provider. Register your service in a module that imports the configured `AiModule`. If multiple feature modules need it, import and re-export `AiModule` from a shared host module so each consumer uses the same registration.
+
+```ts
+import { Injectable } from "@nestjs/common";
+import { AiChatService, type AiCaller } from "nestjs-ai-middleware";
+
+@Injectable()
+export class SupportService {
+  constructor(private readonly ai: AiChatService) {}
+
+  readChatRun(runId: string, verifiedCaller: AiCaller) {
+    return this.ai.readRun(runId, verifiedCaller);
+  }
+}
+```
 
 ## Source structure
 
-- `src/contracts/` contains the options, model protocol, authorization, run, conversation, and logger types. Import the public types through the package entry point.
+- `src/contracts/` contains the options, model protocol, execution context, run, conversation, and logger types. Import the public types through the package entry point.
 - `src/ai.module.ts` and `src/config/` handle Nest registration, startup validation, and building the tool registry. `src/decorators/` defines how host services declare their tools.
-- `src/orchestrator/` runs the model loop. `src/security/`, `src/executor/`, `src/conversation/`, and `src/logging/` handle screening, tool dispatch, conversation lifecycle, and log delivery.
-- `src/events/` publishes committed tool events to local subscribers.
+- `src/orchestrator/ai-orchestrator.ts` coordinates a chat run and saves the final turn. The same directory contains the model and tool loop in `ai-answer.ts`, attachment processing in `ai-attachments.ts`, and per-run screening and model call tracking in `ai-run-context.ts`.
+- `src/security/`, `src/executor/`, `src/conversation/`, and `src/logging/` handle screening, tool dispatch, conversation storage, and run records.
+- `src/services/` contains the injectable `AiChatService` API for the host backend.
 
 ## Retail integration test
 
@@ -56,56 +174,81 @@ The local `test-app` workspace exercises the packed package through a Nest HTTP 
 
 ## Access and prompt security
 
-Authenticate the host endpoint and derive `AiExecutionContext.caller` from the verified request. Pass the original request under `http` and use its Nest context ID. The executor runs `@UseGuards()` declared on the registered service class and tool method in class-first order, using the owning Nest module and original request scope. Guarded tools require HTTP context. The host policy still checks tool permissions and validated arguments. Controller route guards apply on their own HTTP routes. Resource checks that rely on tool arguments belong in the host policy or service. [NestJS guards](https://docs.nestjs.com/guards)
+Authenticate the host endpoint and derive `AiExecutionContext.caller` from the verified request. Pass the original request under `http` and use its Nest context ID. The executor runs `@UseGuards()` declared on the registered service class and tool method in class-first order, using the owning Nest module and original request scope. Guarded tools require HTTP context. Controller route guards apply on their own HTTP routes. Put resource checks that rely on validated tool arguments in the business service. [NestJS guards](https://docs.nestjs.com/guards)
 
-Built-in prompt checks inspect input, history, model text, tool arguments, and tool results. Configure them in `forRoot()` or the `forRootAsync()` factory.
+Input and output screening are both enabled by default. Configure the switches independently in the module options. Omitting either switch leaves it enabled. Set `promptSecurity: false` to turn off both checks.
 
 ```ts
-promptSecurity: {
-  rules: [{ contains: 'internal cost price', stages: ['input', 'output'] }],
-  classifier: { model: securityModel, stages: ['input', 'output'], timeoutMs: 5000 },
-  rejection: 'close',
-}
+AiModule.forRoot({
+  model,
+  promptSecurity: { input: true, output: true },
+});
 ```
 
-Omitting `promptSecurity` enables the built-in signatures. `rules` adds normalized, case-insensitive deny phrases. Omit a rule's `stages` to apply it at every stage. An `allow` callback can add a host policy. Set `builtInChecks: false` to select host rules, a callback, or a classifier in place of the default signatures.
+- `input` screens incoming messages, saved history, attachment notes, and tool results before they reach the chat model.
+- `output` screens model-generated tool requests and the final answer, including any changes from `presentAnswer`, before the answer is saved or returned.
 
-The optional classifier receives the stage and content in a separate model call with an empty tool list. It checks input and output by default. The classifier must return `ALLOW` to permit the content. A rejection, invalid answer, or timeout uses the configured rejection behavior. Choose the classifier provider with the host's data handling requirements in mind.
-
-`enabled: false` skips the configurable screening. Credential fields, recognizable secret formats, credential extraction requests, and destructive database patterns are checked in every mode. Tool schemas and authorization apply independently. Design tool responses to contain only data the caller may read.
-
-A detected violation throws `AiSecurityError` with the configured `rejection` mode. For the default `'close'`, an HTTP host destroys the socket before writing a response. A proxy in front of that route must preserve the aborted connection. For `'respond'`, the host can return a sanitized error such as HTTP 403. Signature checks cover common injection patterns. Keep closed argument schemas, fixed parameterized queries, and per-tool authorization as enforced boundaries.
+Tool schemas, Nest guards, and business authorization still apply. A rejected check aborts the run and throws `AiSecurityError`, which Nest returns as a generic HTTP 500. If the host catches the error, rethrow it to keep that response. With a database adapter configured, the middleware records `SECURITY_REJECTED` in the backend run record. The HTTP response is generic and the configured logger omits the rejection event.
 
 ### Tool operations
 
-Read tools default to `operation: 'get'`. A host can opt in to `create` and `update` with `execution.allowWrites: true` and register specific tools with `readOnly: false` and an explicit `operation`. The policy receives `tool.operation`, the authenticated caller, and the validated arguments. Check resource ownership and the applicable permission on every dispatch. The registry rejects `delete`. Keep delete, cascade-delete, and arbitrary SQL capabilities outside the tool allowlist. Apply any required confirmation or idempotency in the host's write flow. The example exposes reads only.
+Set `inputSchema` in `@AiTool()` to an object JSON Schema. Use `properties` to name and type the inputs and `required` to mark mandatory fields. The executor validates the model's input and passes the resulting object to the method. The method can destructure fields by name and collect the rest with `...rest`. Set `additionalProperties: false` to reject undeclared fields or supply a schema to validate extra fields. For a method with no arguments, use an object schema with no properties and `additionalProperties: false`.
 
-Give each tool a stable ID with `@AiTool({ id: 'catalog.product-trend', ... })`. The registry checks uniqueness and uses the tool name as the ID when omitted. Successful calls expose the stable `toolId` and a distinct, generated `invocationId` through `onToolResult`. Each run returns its own `runId` and the IDs of the tools it executed successfully.
+```ts
+@AiTool({
+  name: 'find_orders',
+  description: 'Find recent orders for a customer.',
+  readOnly: true,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      customerId: { type: 'string' },
+      limit: { type: 'integer', minimum: 1 },
+      status: { type: 'string', enum: ['open', 'closed'] },
+    },
+    required: ['customerId'],
+    additionalProperties: false,
+  },
+})
+findOrders({ customerId, limit = 10, ...filters }: {
+  customerId: string;
+  limit?: number;
+  status?: 'open' | 'closed';
+}) {
+  return this.orders.findRecent(customerId, limit, filters);
+}
+```
+
+The model can supply `{ customerId: 'customer-1' }` and the method uses its default `limit`. Application code can call `findOrders({ limit: 5, customerId: 'customer-1' })` directly. Schema properties can describe nested objects, arrays, and constraints for tool input. Keep business rules that apply to every caller in the service.
+
+Read tools default to `operation: 'get'`. A host can opt in to `create` and `update` with `execution.allowWrites: true` and register specific tools with `readOnly: false` and an explicit `operation`. Check resource ownership and the applicable permissions in the service. The registry rejects `delete`. Leave delete, cascade-delete, and arbitrary SQL methods undecorated. Apply any required confirmation or idempotency in the host's write flow. The example exposes reads only.
+
+Give each tool a stable ID with `@AiTool({ id: 'catalog.product-trend', ... })`. The registry checks uniqueness and uses the tool name as the ID when omitted. The `onToolResult` option runs during the current `sendMessage()` call and gives the calling backend the tool result, stable `toolId`, and generated `invocationId`. Input screening checks that result before the callback when enabled. The retail example uses it to assemble charts in the HTTP response. Each run returns its own `runId` and the IDs of the tools it executed successfully.
 
 ### Conversations
 
 Pass a host-initialized adapter as `database.adapter` in `forRoot()` or `forRootAsync()`. SQLite is the local default choice and uses Node’s built-in driver. The host opens and closes the database.
 
 ```ts
-import { SqliteDatabaseAdapter } from 'nestjs-ai-middleware-adapter-sqlite';
+import { SqliteDatabaseAdapter } from "nestjs-ai-middleware-adapter-sqlite";
 
-const adapter = new SqliteDatabaseAdapter('./data/nest-ai-middleware.sqlite');
+const adapter = new SqliteDatabaseAdapter("./data/nest-ai-middleware.sqlite");
 AiModule.forRoot({
   model,
-  services,
-  authorization,
   database: { adapter },
   logger,
 });
 ```
 
-Call `run()` with the verified caller to start a session. Keep the returned `sessionId` and pass it in the run options on each follow-up. The plugin binds the session to the caller's subject and tenant, serializes active runs within the session, and saves only exchanges that pass screening. `readConversation(sessionId, caller, after?)` returns a page of complete turns. Start at cursor zero and follow `nextAfter` until omitted.
+Call `AiChatService.sendMessage()` with the verified caller to start a session. Only the creator can list, read, or resume that session. Access requires the same `subjectId` and `tenantId` that were recorded at creation. Keep the returned `sessionId` and pass it on each follow-up. The plugin saves each successful exchange, including the text returned by a host-supplied `presentAnswer` callback. If a run is already active in the session, a second request receives `SESSION_BUSY`. `AiChatService.readConversation(sessionId, caller, after?)` returns up to 50 complete turns. Start at cursor zero and follow `nextAfter` until omitted. Both a missing session and a session owned by another caller return `SESSION_UNAVAILABLE`.
 
-The adapter returns original turns in bounded pages. The core conversation service selects the opening exchange and as many recent exchanges as fit into a 24 KiB context budget, with up to 3 KiB per prior message. The core also issues session IDs and chooses when to release a lease or discard an empty session. `AI_REQUEST_LIMITS` exports these limits and the 16 KiB current-message limit. Callers using the plugin without persistence may pass bounded `history` directly. With persistence enabled, the session is the source of history.
+Use `AiChatService.listConversations(caller, after?)` to let a signed-in user choose a previous conversation. It returns up to 20 summaries with the session ID, a preview of the first saved message, and the last saved turn's run time in Unix milliseconds. The bundled adapters limit the preview to 120 characters. A run time of zero indicates unavailable bookkeeping. Pass the returned `nextAfter` back unmodified for the next page. Pass the same verified caller to read or continue the selected session.
+
+Resuming a conversation sends all saved turns from the verified session to the model in order. `readConversation()` returns the complete saved transcript in pages. Without persistence, pass `history` directly to `sendMessage()`.
 
 ### Logging
 
-Pass your initialized `AiLogger` in `logger`. The interface has one method, `log(event: AiLogEvent)`. Events carry the verified subject, tenant when present, run ID, and session ID once ownership is established. The `input` and `output` events include screened text. The `reasoning` events report observable tool calls and run rejections, including stable tool and invocation IDs when available. Raw rejected content and model chain of thought stay out of these events. The host controls where accepted text is sent and how the sink retains it. Sink errors and timeouts leave the interaction available.
+Pass your initialized `AiLogger` in `logger`. The interface has one method, `log(event: AiLogEvent)`. Events carry the verified subject, tenant when present, run ID, and session ID once ownership is established. The `input` and `output` events include accepted text. The `reasoning` events report observable tool calls and non-security run failures, including stable tool and invocation IDs when available. Security rejections are recorded through the database adapter. The host controls where accepted text is sent and how the sink retains it. Sink errors and timeouts leave the interaction available.
 
 ## SQLite
 
@@ -113,9 +256,9 @@ The retail integration places the database in this plugin checkout at `data/nest
 
 ### Adapter packages
 
-The adapter packages are `nestjs-ai-middleware-adapter-sqlite`, `nestjs-ai-middleware-adapter-postgres`, and `nestjs-ai-middleware-adapter-mongodb`. The PostgreSQL adapter uses the host's `pg.Pool` and a dedicated schema. The MongoDB adapter uses the host's `MongoClient` and prefixed collections. Call the adapter's `initialize()` during PostgreSQL or MongoDB setup. Each adapter writes only the plugin's conversation and bookkeeping records.
+The adapter packages are `nestjs-ai-middleware-adapter-sqlite`, `nestjs-ai-middleware-adapter-postgres`, and `nestjs-ai-middleware-adapter-mongodb`. The PostgreSQL adapter uses the host's `pg.Pool` and a dedicated schema. The MongoDB adapter uses the host's `MongoClient` and prefixed collections. Pending migrations run when the SQLite adapter opens its file and when the host awaits `initialize()` on PostgreSQL or MongoDB. An adapter that sees a newer schema version fails initialization.
 
-The host can also supply its own implementation of `AiDatabaseAdapter`. The core controls the records and selects the conversation context consistently for every adapter.
+The host can also supply its own implementation of `AiDatabaseAdapter`. The core manages the records and loads history the same way for every adapter. Implement the optional `listConversations` adapter method to enable the conversation picker. All three bundled adapters support listing existing conversations.
 
 ```ts
 AiModule.forRootAsync({
@@ -123,8 +266,6 @@ AiModule.forRootAsync({
   inject: [HOST_AI_DATABASE],
   useFactory: (adapter: AiDatabaseAdapter) => ({
     model,
-    services,
-    authorization,
     database: { adapter },
   }),
 });
@@ -134,23 +275,4 @@ Implement the adapter with parameterized queries. Check the verified subject and
 
 ### Read stored output and logs
 
-Inject `AiRunReader` into a service in a Nest module that imports the registered `AiModule`. Apply the host's existing authentication and authorization before calling `readRun(runId, verifiedCaller, after?)`. Pass the principal established by the app's guards. The reader scopes the result to the caller's subject and tenant. It returns the run status, accepted output when available, and committed model and tool events. Start at cursor zero and follow `nextAfter` for further events. Missing and inaccessible runs both return `undefined`.
-
-### Subscribe to tool events
-
-Inject `AiToolEvents` into a Nest service that imports the registered module. Pass a principal established by the host and the stable tool IDs to observe.
-
-```ts
-const unsubscribe = toolEvents.subscribe(
-  { caller: verifiedCaller, toolIds: ['retail.catalog.product-trend'] },
-  async (event, signal) => {
-    await metrics.recordToolUse(event.eventId, event.toolId, signal);
-  },
-);
-```
-
-By default, the subscriber receives successful tool events from the same subject and tenant. Set `outcomes` to subscribe to other outcomes. To authorize a background service principal, implement `authorization.canObserveToolEvent` using the host's permissions. It receives the subscriber, the run owner, and event metadata. When present, the policy decides all deliveries and must return `true` to permit one. A separate `AiRunReader` call has its own session ownership check.
-
-The plugin schedules delivery after the tool attempt commits to the configured database. Each event includes the tool ID, invocation ID as `eventId`, run ID, session ID, outcome, and timing. Accepted answer text is available through the read API. Tool events carry metadata only. A successful tool can belong to a run that later fails.
-
-Subscriptions are in-process and best effort. Each subscription has a 128-event queue. When it fills, new deliveries are dropped and the host logger can report the overflow. Handlers run independently of chat and other subscribers. Call `unsubscribe()` during the consumer's cleanup. Nest shutdown also clears queued deliveries and aborts the handler's signal. For idempotent reactions, use `eventId` as the key.
+Call `AiChatService.readRun(runId, verifiedCaller, after?)` after applying the host's authentication and authorization. The service scopes the result to the caller's subject and tenant through the associated session and returns the run status, accepted output, and committed model and tool events. Keep this result in the backend because it may include private rejection codes. The bundled adapters return up to 50 events per page. Start at cursor zero and follow `nextAfter` for further events. Missing and inaccessible runs both return `undefined`. The conversation and run read methods query the configured storage directly.

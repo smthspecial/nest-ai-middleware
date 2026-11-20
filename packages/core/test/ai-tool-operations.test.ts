@@ -1,88 +1,259 @@
-import { expect, it } from '@jest/globals';
-import { Injectable, Module } from '@nestjs/common';
-import { ContextIdFactory } from '@nestjs/core';
-import { Test } from '@nestjs/testing';
-import { AiArgs, AiModule, AiPermissions, AiService, AiTool, AiToolExecutor } from '../src/index.js';
-import type { AiAuthorizationPolicy, AiModel, AiToolOptions } from '../src/index.js';
+import { expect, it } from "@jest/globals";
+import {
+  ForbiddenException,
+  Injectable,
+  Module,
+  UseGuards,
+} from "@nestjs/common";
+import type { CanActivate } from "@nestjs/common";
+import { ContextIdFactory } from "@nestjs/core";
+import { Test } from "@nestjs/testing";
+import { AiModule, AiTool, AiToolExecutor } from "../src/index.js";
+import type { AiModel, AiToolOptions, JsonObject } from "../src/index.js";
 
-const schema = { type: 'object', properties: { id: { type: 'integer' } }, required: ['id'], additionalProperties: false };
+const recordIdInput = {
+  type: "object",
+  properties: { id: { type: "integer" } },
+  required: ["id"],
+  additionalProperties: false,
+};
+const updateRecordInput = {
+  ...recordIdInput,
+  properties: {
+    ...recordIdInput.properties,
+    quantity: { type: "integer", minimum: 1 },
+    note: { type: "string" },
+    review: { type: "boolean" },
+  },
+  additionalProperties: { type: "string" },
+};
+
+const editorGuard: CanActivate = {
+  canActivate(context) {
+    return (
+      context.switchToHttp().getRequest<{ role: string }>().role === "editor"
+    );
+  },
+};
 
 @Injectable()
-@AiService()
-@AiPermissions('records')
 class RecordService {
   changes = 0;
 
-  @AiTool({ name: 'get_record', description: 'Read an example record.', readOnly: true, inputSchema: schema })
-  get(@AiArgs() args: { id: number }) { return args; }
+  @AiTool({
+    name: "get_record",
+    description: "Read an example record.",
+    readOnly: true,
+    inputSchema: recordIdInput,
+  })
+  get({ id }: { id: number }) {
+    if (id !== 1) throw new ForbiddenException();
+    return { id };
+  }
 
-  @AiTool({ name: 'create_record', description: 'Create an example record.', readOnly: false, operation: 'create', inputSchema: schema })
-  create(@AiArgs() args: { id: number }) { this.changes++; return args; }
+  @UseGuards(editorGuard)
+  @AiTool({
+    name: "create_record",
+    description: "Create an example record.",
+    readOnly: false,
+    operation: "create",
+    inputSchema: recordIdInput,
+  })
+  create({ id }: { id: number }) {
+    const result = this.get({ id });
+    this.changes++;
+    return result;
+  }
 
-  @AiTool({ name: 'update_record', description: 'Update an example record.', readOnly: false, operation: 'update', inputSchema: schema })
-  update(@AiArgs() args: { id: number }) { this.changes++; return args; }
+  @UseGuards(editorGuard)
+  @AiTool({
+    name: "update_record",
+    description: "Update an example record.",
+    readOnly: false,
+    operation: "update",
+    inputSchema: updateRecordInput,
+  })
+  update({
+    id,
+    quantity = 1,
+    note = "default, (note)",
+    review = false,
+    ...labels
+  }: JsonObject & {
+    id: number;
+    quantity?: number;
+    note?: string;
+    review?: boolean;
+  }) {
+    this.create({ id });
+    return { id, quantity, note, review, labels };
+  }
 }
 
 @Injectable()
-@AiService()
-@AiPermissions('records')
 class InvalidDeleteService {
-  @AiTool({ name: 'remove_record', description: 'Delete an example record.', readOnly: false, operation: 'delete', inputSchema: schema } as unknown as AiToolOptions)
-  delete(@AiArgs() args: { id: number }) { return args; }
+  @AiTool({
+    name: "remove_record",
+    description: "Delete an example record.",
+    readOnly: false,
+    operation: "delete",
+    inputSchema: recordIdInput,
+  } as unknown as AiToolOptions)
+  delete({ id }: { id: number }) {
+    return { id };
+  }
 }
 
-@Module({ providers: [RecordService, InvalidDeleteService] })
+@Injectable()
+class LegacyArgumentOrderService {
+  @AiTool({
+    name: "legacy_order",
+    description: "Read by positional argument.",
+    readOnly: true,
+    inputSchema: recordIdInput,
+    argumentOrder: ["id"],
+  } as AiToolOptions)
+  read(id: number) {
+    return { id };
+  }
+}
+
+@Module({ providers: [RecordService] })
 class RecordsModule {}
+
+@Module({ providers: [InvalidDeleteService] })
+class InvalidDeleteModule {}
+
+@Module({ providers: [LegacyArgumentOrderService] })
+class LegacyArgumentOrderModule {}
 
 const model: AiModel = {
   capabilities: { toolCalling: false },
-  async generate() { return { kind: 'final', message: 'OK' }; },
+  async generate() {
+    return { kind: "final", message: "OK" };
+  },
 };
 
-const authorization: AiAuthorizationPolicy = {
-  canDiscover: ({ context, tool }) => tool.operation === 'get' || context.caller.subjectId === 'editor',
-  canExecute: ({ context, tool, args }) => args.id === 1 &&
-    (tool.operation === 'get' || context.caller.subjectId === 'editor'),
-};
-
-function createFixture(allowWrites: boolean, service: typeof RecordService | typeof InvalidDeleteService = RecordService) {
-  return Test.createTestingModule({ imports: [RecordsModule, AiModule.forRoot({
-    model,
-    authorization,
-    services: [service],
-    execution: { allowWrites },
-  })] }).compile();
+function createFixture(allowWrites: boolean, recordsModule = RecordsModule) {
+  return Test.createTestingModule({
+    imports: [
+      recordsModule,
+      AiModule.forRoot({
+        model,
+        execution: { allowWrites },
+      }),
+    ],
+  }).compile();
 }
 
-it('authorizes get, create, and update against the caller and resource on each dispatch', async () => {
+it("uses service guards and business authorization for get, create, and update", async () => {
   const fixture = await createFixture(true);
   try {
     await fixture.init();
     const executor = fixture.get(AiToolExecutor);
     const service = fixture.get(RecordService);
-    const viewer = { caller: { subjectId: 'viewer' }, contextId: ContextIdFactory.create() };
-    const editor = { caller: { subjectId: 'editor' }, contextId: ContextIdFactory.create() };
+    const viewer = {
+      caller: { subjectId: "viewer" },
+      contextId: ContextIdFactory.create(),
+      http: { request: { role: "viewer" } },
+    };
+    const editor = {
+      caller: { subjectId: "editor" },
+      contextId: ContextIdFactory.create(),
+      http: { request: { role: "editor" } },
+    };
 
-    expect((await executor.discover(viewer, AbortSignal.timeout(1000))).map(tool => tool.name)).toEqual(['get_record']);
-    await expect(executor.execute('get_record', { id: 1 }, viewer)).resolves.toEqual({ id: 1 });
-    await expect(executor.execute('get_record', { id: 2 }, viewer)).rejects.toMatchObject({ code: 'DENIED' });
-    await expect(executor.execute('create_record', { id: 1 }, viewer)).rejects.toMatchObject({ code: 'DENIED' });
-    await expect(executor.execute('update_record', { id: 2 }, editor)).rejects.toMatchObject({ code: 'DENIED' });
+    expect(
+      (await executor.discover(viewer, AbortSignal.timeout(1000))).map(
+        (tool) => tool.name,
+      ),
+    ).toEqual(["get_record"]);
+    await expect(
+      executor.execute("get_record", { id: 1 }, viewer),
+    ).resolves.toEqual({ id: 1 });
+    await expect(
+      executor.execute("get_record", { id: 2 }, viewer),
+    ).rejects.toMatchObject({ code: "TOOL_FAILED" });
+    await expect(
+      executor.execute("create_record", { id: 1 }, viewer),
+    ).rejects.toMatchObject({ code: "DENIED" });
+    await expect(
+      executor.execute("update_record", { id: 2 }, editor),
+    ).rejects.toMatchObject({ code: "TOOL_FAILED" });
     expect(service.changes).toBe(0);
-    await expect(executor.execute('create_record', { id: 1 }, editor)).resolves.toEqual({ id: 1 });
-    await expect(executor.execute('update_record', { id: 1 }, editor)).resolves.toEqual({ id: 1 });
-    expect(service.changes).toBe(2);
+    await expect(
+      executor.execute("create_record", { id: 1 }, editor),
+    ).resolves.toEqual({ id: 1 });
+    const tools = await executor.discover(editor, AbortSignal.timeout(1000));
+    const updateTool = tools.find((tool) => tool.name === "update_record");
+    expect(updateTool?.inputSchema).toEqual(updateRecordInput);
+    await expect(
+      executor.execute("update_record", { id: 1 }, editor),
+    ).resolves.toEqual({
+      id: 1,
+      quantity: 1,
+      note: "default, (note)",
+      review: false,
+      labels: {},
+    });
+    const firstOrder = { source: "manual", review: true, quantity: 4, id: 1 };
+    const otherOrder = { id: 1, quantity: 4, review: true, source: "manual" };
+    const expected = {
+      id: 1,
+      quantity: 4,
+      note: "default, (note)",
+      review: true,
+      labels: { source: "manual" },
+    };
+    await expect(
+      executor.execute("update_record", firstOrder, editor),
+    ).resolves.toEqual(expected);
+    await expect(
+      executor.execute("update_record", otherOrder, editor),
+    ).resolves.toEqual(expected);
+    await expect(
+      executor.execute("update_record", { id: "1" }, editor),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENTS" });
+    await expect(
+      executor.execute("update_record", { id: 1, source: false }, editor),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENTS" });
+    await expect(
+      executor.execute("get_record", { id: 1, source: "manual" }, viewer),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENTS" });
+    expect(service.changes).toBe(4);
+    expect(service.update({ id: 1, quantity: 6, note: "manual" })).toEqual({
+      id: 1,
+      quantity: 6,
+      note: "manual",
+      review: false,
+      labels: {},
+    });
   } finally {
     await fixture.close();
   }
 });
 
-it('rejects writes without host opt-in and rejects delete even with opt-in', async () => {
-  const readOnly = await createFixture(false);
-  const withDelete = await createFixture(true, InvalidDeleteService);
+it("rejects legacy positional tool configuration at startup", async () => {
+  const fixture = await createFixture(false, LegacyArgumentOrderModule);
   try {
-    await expect(readOnly.init()).rejects.toThrow(/requires execution.allowWrites/);
-    await expect(withDelete.init()).rejects.toThrow(/Unsupported AI tool operation/);
+    await expect(fixture.init()).rejects.toThrow(
+      /receives one named input object/,
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+it("rejects writes without host opt-in and rejects delete even with opt-in", async () => {
+  const readOnly = await createFixture(false);
+  const withDelete = await createFixture(true, InvalidDeleteModule);
+  try {
+    await expect(readOnly.init()).rejects.toThrow(
+      /requires execution.allowWrites/,
+    );
+    await expect(withDelete.init()).rejects.toThrow(
+      /Unsupported AI tool operation/,
+    );
   } finally {
     await readOnly.close();
     await withDelete.close();

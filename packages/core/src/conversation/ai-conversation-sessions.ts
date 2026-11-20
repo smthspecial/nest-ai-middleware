@@ -1,33 +1,62 @@
-import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
-import type { AiCaller } from '../contracts/ai-authorization-policy.js';
-import type { AiDatabaseAdapter } from '../contracts/ai-database.js';
-import { AiDatabase } from '../database/ai-database.js';
-import { withSignal } from '../executor/with-signal.js';
-import { AiConversationError, isAiSessionId } from './ai-conversation-error.js';
-import type { AiConversationPage, AiConversationSession, AiConversationTurnQuery, AiStoredConversationTurn } from '../contracts/ai-conversation.js';
-import { selectConversationContext } from './conversation-context.js';
+import { randomUUID } from "node:crypto";
+import { Injectable } from "@nestjs/common";
+import type { AiCaller } from "../contracts/ai-execution-context.js";
+import type { AiDatabaseAdapter } from "../contracts/ai-database.js";
+import { AiDatabase } from "../database/ai-database.js";
+import { withSignal } from "../executor/with-signal.js";
+import { AiConversationError, isAiSessionId } from "./ai-conversation-error.js";
+import type {
+  AiConversationListPage,
+  AiConversationListQuery,
+  AiConversationPage,
+  AiConversationSession,
+  AiConversationTurn,
+  AiConversationTurnQuery,
+  AiStoredConversationTurn,
+} from "../contracts/ai-conversation.js";
 
 const runLeaseMs = 35_000;
 const transcriptPageSize = 50;
+const conversationPageSize = 20;
 
 @Injectable()
 export class AiConversationSessions {
   constructor(private readonly database: AiDatabase) {}
 
-  get enabled(): boolean { return this.database.adapter !== undefined; }
+  get enabled(): boolean {
+    return this.database.adapter !== undefined;
+  }
 
-  async begin(caller: AiCaller, id: string | undefined, runId: string, signal: AbortSignal) {
+  async begin(
+    caller: AiCaller,
+    id: string | undefined,
+    runId: string,
+    signal: AbortSignal,
+  ) {
     const store = this.requireStore();
-    if (id !== undefined && !isAiSessionId(id)) throw new AiConversationError('SESSION_UNAVAILABLE');
+    if (id !== undefined && !isAiSessionId(id))
+      throw new AiConversationError("SESSION_UNAVAILABLE");
     const session = { id: id ?? randomUUID(), caller };
     const create = id === undefined;
-    const result = await this.fromStore(signal, () => store.beginConversation({
-      session, runId, create, leaseUntil: Date.now() + runLeaseMs,
-    }, signal));
-    if (result.status !== 'ready') throw new AiConversationError(result.status === 'busy' ? 'SESSION_BUSY' : 'SESSION_UNAVAILABLE');
+    const result = await this.fromStore(signal, () =>
+      store.beginConversation(
+        {
+          session,
+          runId,
+          create,
+          leaseUntil: Date.now() + runLeaseMs,
+        },
+        signal,
+      ),
+    );
+    if (result.status !== "ready")
+      throw new AiConversationError(
+        result.status === "busy" ? "SESSION_BUSY" : "SESSION_UNAVAILABLE",
+      );
     try {
-      const history = create ? [] : await selectConversationContext(query => this.listTurns(store, session, query, signal));
+      const history = create
+        ? []
+        : await this.loadHistory(store, session, signal);
       return { session, history };
     } catch (error) {
       await this.release(session, runId);
@@ -35,51 +64,147 @@ export class AiConversationSessions {
     }
   }
 
-  async finish(session: AiConversationSession, runId: string, turn: AiStoredConversationTurn, signal: AbortSignal): Promise<void> {
+  private async loadHistory(
+    store: AiDatabaseAdapter,
+    session: AiConversationSession,
+    signal: AbortSignal,
+  ) {
+    const history: AiConversationTurn[] = [];
+    let after = 0;
+    for (;;) {
+      const page = await this.listTurns(
+        store,
+        session,
+        { order: "ascending", after, limit: transcriptPageSize },
+        signal,
+      );
+      for (const { user, assistant } of page) history.push({ user, assistant });
+      if (page.length < transcriptPageSize) return history;
+      after = page[page.length - 1].position;
+    }
+  }
+
+  async finish(
+    session: AiConversationSession,
+    runId: string,
+    turn: AiStoredConversationTurn,
+    signal: AbortSignal,
+  ): Promise<void> {
     const store = this.requireStore();
-    await this.fromStore(signal, () => store.finishConversation({ session, runId, turn }, signal));
+    await this.fromStore(signal, () =>
+      store.finishConversation({ session, runId, turn }, signal),
+    );
   }
 
   async release(session: AiConversationSession, runId: string): Promise<void> {
     const signal = AbortSignal.timeout(250);
     try {
-      await withSignal(signal, () => this.requireStore().finishConversation({ session, runId, discardIfEmpty: true }, signal));
+      await withSignal(signal, () =>
+        this.requireStore().finishConversation(
+          { session, runId, discardIfEmpty: true },
+          signal,
+        ),
+      );
     } catch {
       // An abandoned lease expires in the store.
     }
   }
 
-  async read(id: string, caller: AiCaller, after = 0, signal = AbortSignal.timeout(5000)): Promise<AiConversationPage> {
-    if (!isAiSessionId(id) || !caller.subjectId.trim()) throw new AiConversationError('SESSION_UNAVAILABLE');
-    if (!Number.isSafeInteger(after) || after < 0) throw new TypeError('Invalid conversation cursor.');
-    const rows = await this.listTurns(this.requireStore(), { id, caller }, {
-      order: 'ascending', after, limit: transcriptPageSize + 1,
-    }, signal);
+  async read(
+    id: string,
+    caller: AiCaller,
+    after = 0,
+    signal = AbortSignal.timeout(5000),
+  ): Promise<AiConversationPage> {
+    if (!isAiSessionId(id) || !caller.subjectId.trim())
+      throw new AiConversationError("SESSION_UNAVAILABLE");
+    if (!Number.isSafeInteger(after) || after < 0)
+      throw new TypeError("Invalid conversation cursor.");
+    const rows = await this.listTurns(
+      this.requireStore(),
+      { id, caller },
+      {
+        order: "ascending",
+        after,
+        limit: transcriptPageSize + 1,
+      },
+      signal,
+    );
     const page = rows.slice(0, transcriptPageSize);
     return {
       turns: page.map(({ position: _position, ...turn }) => turn),
-      ...(rows.length > transcriptPageSize ? { nextAfter: page[page.length - 1].position } : {}),
+      ...(rows.length > transcriptPageSize
+        ? { nextAfter: page[page.length - 1].position }
+        : {}),
     };
   }
 
-  private async listTurns(store: AiDatabaseAdapter, session: AiConversationSession, query: AiConversationTurnQuery, signal: AbortSignal) {
-    const rows = await this.fromStore(signal, () => store.listConversationTurns(session, query, signal));
-    if (!rows) throw new AiConversationError('SESSION_UNAVAILABLE');
+  async list(
+    caller: AiCaller,
+    after?: string,
+    signal = AbortSignal.timeout(5000),
+  ): Promise<AiConversationListPage> {
+    if (!caller.subjectId.trim())
+      throw new AiConversationError("SESSION_UNAVAILABLE");
+    const store = this.requireStore();
+    const list = store.listConversations;
+    if (!list) throw new AiConversationError("SESSION_UNAVAILABLE");
+    const query: AiConversationListQuery = {
+      limit: conversationPageSize + 1,
+      ...(after === undefined ? {} : { before: this.parseListCursor(after) }),
+    };
+    const rows = await this.fromStore(signal, () =>
+      list.call(store, caller, query, signal),
+    );
+    const conversations = rows.slice(0, conversationPageSize);
+    const last = conversations.at(-1);
+    return {
+      conversations,
+      ...(last && rows.length > conversationPageSize
+        ? { nextAfter: `${last.updatedAt}.${last.sessionId}` }
+        : {}),
+    };
+  }
+
+  private parseListCursor(
+    after: string,
+  ): NonNullable<AiConversationListQuery["before"]> {
+    const match = /^(\d{1,16})\.([a-f0-9-]{36})$/.exec(after);
+    const updatedAt = Number(match?.[1]);
+    const sessionId = match?.[2];
+    if (!Number.isSafeInteger(updatedAt) || !isAiSessionId(sessionId))
+      throw new TypeError("Invalid conversation cursor.");
+    return { sessionId, updatedAt };
+  }
+
+  private async listTurns(
+    store: AiDatabaseAdapter,
+    session: AiConversationSession,
+    query: AiConversationTurnQuery,
+    signal: AbortSignal,
+  ) {
+    const rows = await this.fromStore(signal, () =>
+      store.listConversationTurns(session, query, signal),
+    );
+    if (!rows) throw new AiConversationError("SESSION_UNAVAILABLE");
     return rows;
   }
 
   private requireStore(): AiDatabaseAdapter {
     const adapter = this.database.adapter;
-    if (!adapter) throw new AiConversationError('SESSION_UNAVAILABLE');
+    if (!adapter) throw new AiConversationError("SESSION_UNAVAILABLE");
     return adapter;
   }
 
-  private async fromStore<T>(signal: AbortSignal, work: () => T | Promise<T>): Promise<T> {
+  private async fromStore<T>(
+    signal: AbortSignal,
+    work: () => T | Promise<T>,
+  ): Promise<T> {
     try {
       return await withSignal(signal, work);
     } catch {
       signal.throwIfAborted();
-      throw new AiConversationError('STORE_UNAVAILABLE');
+      throw new AiConversationError("STORE_UNAVAILABLE");
     }
   }
 }

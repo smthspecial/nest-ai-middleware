@@ -2,14 +2,14 @@
 id: TASK-006
 type: task
 title: "Bind host authentication and authorization guards"
-status: todo
+status: done
 created: 2026-11-18
 storyId: US-003
 releaseId: REL-001
 priority: high
-dependsOn: TASK-005
+dependsOn: TASK-003
 ---
 
 # Bind host authentication and authorization guards
 
-Apply native Nest guard lists and route metadata through both dynamic registrations. Test actual HTTP execution context, guard order, DI, and denial before handler execution.
+The retail controller applies native authentication and read guards in order. The packed HTTP fixture verifies that unsigned requests are rejected and authorized requests reach the middleware, and the core fixture verifies guard order in the original request scope. [Host integration](../../technical/auth/auth-001.md).
