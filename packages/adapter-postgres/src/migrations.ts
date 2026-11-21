@@ -1,4 +1,4 @@
-import type { PoolClient } from "pg";
+import type { PostgresConnection } from "./index.js";
 
 // Versions are the one-based positions in this list. Append new migrations only.
 const migrations = [
@@ -29,7 +29,7 @@ const migrations = [
 
 /** Run in a transaction on a single client. */
 export async function applyPostgresMigrations(
-  client: PoolClient,
+  client: PostgresConnection,
 ): Promise<void> {
   // Read the migration history from a fresh snapshot after waiting for the lock.
   await client.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");

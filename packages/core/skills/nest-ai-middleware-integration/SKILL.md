@@ -11,6 +11,8 @@ The host owns its route, auth, provider configuration, and database lifecycle. T
 
 Install `nestjs-ai-middleware` and the provider package the host uses. For local builds, run `npm run pack:packages` in the library workspace. Install the core tarball and the selected storage adapter tarball in the consuming app and refresh the lockfile. Verify the archive or its integrity when replacing a tarball at the same version.
 
+Check the package's Node.js engines and Nest peer dependencies against the host. The core and PostgreSQL adapter support Node.js 24 and 26, and the core supports NestJS 11 and 12. The packages publish ESM. A CommonJS Nest host can dynamically import an ESM feature module and register the resulting promise in the host module's imports. Verify the compiled entry point on the host runtime. If using vendored archives, copy them into the build context before the frozen dependency install.
+
 Create the provider's Vercel AI SDK V3 or V4 language model using server-side configuration, then pass `new SdkModel(providerModel, { instructions })` as `model`. Tool calling is enabled by default. Set `toolCalling: false` for text-only models. For an existing custom provider or a scripted test, pass an implementation of `AiModel` directly.
 
 Import one configured dynamic module alongside the host controller. For pre-initialized dependencies, use `AiModule.forRoot({ model, database: { adapter }, logger })`. If dependencies come from Nest, use `AiModule.forRootAsync({ imports, inject, useFactory })` with the modules that export the injected tokens. The factory returns the same options.
@@ -53,6 +55,7 @@ return aiChatService.sendMessage(
 ## Add storage or observability as needed
 
 - Pass an initialized `AiDatabaseAdapter` as `database.adapter`. The provided adapters use SQLite, PostgreSQL, or MongoDB. The host opens and closes storage. PostgreSQL and MongoDB need `initialize()` during setup. Use `AiChatService.listConversations()`, `readConversation()`, and `readRun()` with the verified caller. Page with `nextAfter` and pass the selected `sessionId` to `sendMessage()` on follow-ups.
+- For a PostgreSQL deployment with separate migration and runtime roles, run `initialize()` with the schema owner during deployment. Grant the runtime role usage on `nest_ai_middleware` and data access to its four data tables. Construct the runtime adapter with the host's restricted pool, and close that pool at shutdown.
 - Resumed chats send all saved turns from the verified session to the model in order. Remove the old `selectConversationHistory` option when upgrading.
 - Inject `AiChatService` into host backend services or controllers in a module that imports the configured `AiModule`. Use `readRun()` with a verified caller to retrieve recorded tool attempts. Use the optional `onToolResult` callback during `sendMessage()` when assembling the current response from a tool result. Input screening checks that result before the callback when enabled.
 - Pass `logger: { log(event) { … } }` to collect accepted input, output, and tool outcomes.
@@ -60,5 +63,7 @@ return aiChatService.sendMessage(
 ## Verify with a packed consumer
 
 Run an offline HTTP test with a scripted `AiModel` or scripted SDK provider. Verify route denial before model use, rejection of denied or invalid tool calls before dispatch, and an authorized tool result reaching the model in the original request scope. Verify that unsafe input and output yield a generic HTTP 500. If storage is configured, verify session reuse, caller isolation, and persistence of the private rejection code.
+
+If the host reports every HTTP 500 to a telemetry service, handle `AiSecurityError` at the controller or filter boundary. Return the generic HTTP 500 payload and keep the typed rejection in backend run storage.
 
 The sibling `test-app` is a reference consumer. `apps/api/src/app.ts` imports `AiModule.forRoot()` directly in `AppModule`. Read `apps/api/src/ai/ai-config.ts` for model and storage setup, `apps/api/src/ai/chat.controller.ts` for host auth and request context, `apps/api/src/catalog/catalog.service.ts` for decorators, and `apps/api/test/retail.test.mjs` for verification. Its API uses the packed core and SQLite packages from `vendor/`.

@@ -1,4 +1,4 @@
-import type { Pool, PoolClient } from "pg";
+import type { QueryResult, QueryResultRow } from "pg";
 import type {
   AiCaller,
   AiConversationListQuery,
@@ -12,6 +12,18 @@ import type {
   AiRunPage,
 } from "nestjs-ai-middleware";
 import { applyPostgresMigrations } from "./migrations.js";
+
+export interface PostgresConnection {
+  query<Row extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: unknown[],
+  ): Promise<Pick<QueryResult<Row>, "rows" | "rowCount">>;
+  release(): void;
+}
+
+interface PostgresPool {
+  connect(): Promise<PostgresConnection>;
+}
 
 interface LeaseRow {
   turn_count: string;
@@ -44,7 +56,7 @@ function ownerKey({ id, caller }: AiConversationSession) {
 }
 
 export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: PostgresPool) {}
 
   async initialize(): Promise<void> {
     await this.transaction(undefined, applyPostgresMigrations);
@@ -330,7 +342,7 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
 
   private async withClient<T>(
     signal: AbortSignal | undefined,
-    work: (client: PoolClient) => Promise<T>,
+    work: (client: PostgresConnection) => Promise<T>,
   ): Promise<T> {
     signal?.throwIfAborted();
     const client = await this.pool.connect();
@@ -344,7 +356,7 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
 
   private async transaction<T>(
     signal: AbortSignal | undefined,
-    work: (client: PoolClient) => Promise<T>,
+    work: (client: PostgresConnection) => Promise<T>,
   ): Promise<T> {
     return this.withClient(signal, async (client) => {
       await client.query("BEGIN");

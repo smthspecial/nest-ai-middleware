@@ -1,6 +1,6 @@
 # PostgreSQL adapter for NestJS AI Middleware
 
-Use an existing host-managed `pg.Pool`. The adapter stores only plugin records in the `nest_ai_middleware` schema. The adapter never selects from application schemas.
+Use an existing host-managed `pg.Pool` on Node.js 24 or 26. The adapter supports `pg` 8.20 and later in the 8.x series. It stores middleware records in the `nest_ai_middleware` schema.
 
 ```ts
 import { PostgresDatabaseAdapter } from "nestjs-ai-middleware-adapter-postgres";

@@ -12,7 +12,7 @@ A reusable NestJS module for calling decorated tools on the host's existing Nest
 
 ## Development
 
-Use Node.js 26 and npm. From the workspace root, run the following commands. The library targets NestJS 12 and ships as ESM with TypeScript declarations.
+The core package supports Node.js 24 and 26 with NestJS 11 and 12. It ships as ESM with TypeScript declarations. Use Node.js 26 and npm to develop the library from the workspace root.
 
 ```sh
 npm ci
