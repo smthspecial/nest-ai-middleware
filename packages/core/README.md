@@ -23,7 +23,7 @@ npm run build
 npm run pack:packages
 ```
 
-`npm publish --workspace nestjs-ai-middleware --dry-run` runs the publish checks and lists the package contents. The package ships the ESM build, TypeScript declarations, README, and integration skill. The plugin database and test fixtures stay in the development checkout.
+The package ships the ESM build, TypeScript declarations, README, and integration skill. The plugin database and test fixtures stay in the development checkout.
 
 ## Register the module
 

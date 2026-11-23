@@ -13,17 +13,17 @@ linkedIds: ARCH-002,ARCH-003,ADR-001,AUTH-001,SRV-001,EPIC-001,TP-001,TP-002
 
 ## Component boundaries
 
-| Component                                       | Responsibility                                                                                                         |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `AiModule`                                      | Validates configuration and registers the host model and middleware providers.                                         |
-| `AiToolRegistry`                                | Builds an in-memory index from `@AiTool()` methods and keeps Nest bindings private.                                    |
-| `AiChatService`                                 | Exposes chat, conversation, and backend run reads to the host.                                                         |
-| `AiOrchestrator`                                | Applies the run deadline, loads history, and saves the accepted turn.                                                  |
-| `runModelLoop`                                  | Sends tool definitions to the model, executes its authorized requests in order, and returns the final text.            |
-| `AiToolExecutor`                                | Uses Nest guards to discover available tools, validates arguments, and executes the tool in the original Nest context. |
-| `AiPromptSecurity`                              | Checks inputs and model outputs according to the host's independent switches.                                          |
-| `AiConversationSessions`                        | Acquires session leases, loads history, saves accepted turns, and handles conversation reads.                         |
-| `AiRunBookkeeping` and `AiRunReader`             | Write and read run records and events through the same optional database adapter.                                      |
+| Component                            | Responsibility                                                                                                         |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `AiModule`                           | Validates configuration and registers the host model and middleware providers.                                         |
+| `AiToolRegistry`                     | Builds an in-memory index from `@AiTool()` methods and keeps Nest bindings private.                                    |
+| `AiChatService`                      | Exposes chat, conversation, and backend run reads to the host.                                                         |
+| `AiOrchestrator`                     | Applies the run deadline, loads history, and saves the accepted turn.                                                  |
+| `runModelLoop`                       | Sends tool definitions to the model, executes its authorized requests in order, and returns the final text.            |
+| `AiToolExecutor`                     | Uses Nest guards to discover available tools, validates arguments, and executes the tool in the original Nest context. |
+| `AiPromptSecurity`                   | Checks inputs and model outputs according to the host's independent switches.                                          |
+| `AiConversationSessions`             | Acquires session leases, loads history, saves accepted turns, and handles conversation reads.                          |
+| `AiRunBookkeeping` and `AiRunReader` | Write and read run records and events through the same optional database adapter.                                      |
 
 ```mermaid
 flowchart LR
@@ -56,7 +56,7 @@ The phases below describe the release roadmap. The component overview and public
 | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1. Core foundation        | Installable NestJS module, model contract, decorators, in-memory registry, and authorized read-only executor. Include a minimal Nest test app, a custom model example, an integration README, and deterministic Jest tests. | A consumer imports a packed build and executes a decorated service method using the host's request context. TP-001 covers startup, boundaries, and execution. |
 | 2. Orchestration and HTTP | Authenticated host endpoint, deterministic discovery, bounded multi-step reads, text responses, and optional database-backed run and usage bookkeeping.                                                                     | A fake model completes a multi-tool request. Verify guard order, request scope, protocol errors, deadlines, and durable bookkeeping when configured.          |
-| 3. Structured responses   | Add validated lists, tables, charts, entities, and data blocks for read workflows.                                                                                                                                          | Tool-capable adapters return valid client responses with or without structured output.                                                                       |
+| 3. Structured responses   | Add validated lists, tables, charts, entities, and data blocks for read workflows.                                                                                                                                          | Tool-capable adapters return valid client responses with or without structured output.                                                                        |
 | 4. Optional integrations  | SDK adapters, persistent conversations, SQLite bookkeeping, observability integrations, streaming, and semantic discovery.                                                                                                  | Core remains usable with a custom model and without a database. Test transcript ownership and preserve executor policies across extensions.                   |
 | Future confirmed writes   | Add forms, approval, durable action state, and host-backed idempotent dispatch behind an explicit opt-in.                                                                                                                   | Test atomic claims, replay, permission changes, expiry, crash recovery, and mutation deduplication.                                                           |
 
@@ -84,7 +84,7 @@ The host backend injects `AiChatService` to read run status, accepted output, an
 
 ## Initial compatibility and integration decisions
 
-- **Runtime.** The workspace builds and tests on Node.js 26 with NestJS 12. The packaged library also supports Node.js 24 and NestJS 11. The npm workflow tests the packed packages in that consumer runtime. [Release workflow](../../../.github/workflows/publish.yml).
+- **Runtime.** The workspace builds and tests on Node.js 26 with NestJS 12. The packaged library also supports Node.js 24 and NestJS 11. Verify the packed packages in that consumer runtime with the standalone compatibility check. [NestJS 11 check](../../../scripts/check-nest11.mjs).
 - **HTTP.** The retail reference app uses Nest's `ExpressAdapter`. The core delegates HTTP handling to the host. Qualify additional adapters with end-to-end tests before documenting their support. [NestJS HTTP adapters](https://docs.nestjs.com/techniques/performance).
 - **Access control.** Host Nest guards protect the application endpoint. Tools use the service and method guards for access checks and business methods for resource checks. [Authorization and host integration](../auth/auth-001.md).
 
