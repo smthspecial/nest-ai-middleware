@@ -35,7 +35,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsc -p tsconfig.test.json && node --experimental-vm-modules ../../node_modules/jest/bin/jest.js",
     "prepack": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && npm run build",
-    "prepublishOnly": "npm run typecheck && npm test"
+    "prepublishOnly": "npm run typecheck && npm test",
+    "publish:npm": "npm publish --access=public --registry=https://registry.npmjs.org/"
   },
   "peerDependencies": {
     "@nestjs/common": "^11.0.0 || ^12.0.0",

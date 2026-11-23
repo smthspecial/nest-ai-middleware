@@ -27,6 +27,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "prepack": "npm run build",
+    "publish:npm": "npm publish --access=public --registry=https://registry.npmjs.org/",
     "test": "tsc -p tsconfig.test.json && node --experimental-vm-modules ../../node_modules/jest/bin/jest.js"
   },
   "peerDependencies": {
