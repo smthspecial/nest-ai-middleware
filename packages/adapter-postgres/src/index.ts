@@ -3,6 +3,8 @@ import type { QueryResult, QueryResultRow } from "pg";
 import type {
   AiCaller,
   AiConversationListQuery,
+  AiConversationSearchMatch,
+  AiConversationSearchQuery,
   AiConversationSession,
   AiConversationSummary,
   AiConversationTurnQuery,
@@ -240,6 +242,52 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
         sessionId: row.id,
         preview: row.preview,
         updatedAt: Number(row.updated_at),
+      }));
+    });
+  }
+
+  async searchConversationTurns(
+    caller: AiCaller,
+    { excludeSessionId, keywords, limit }: AiConversationSearchQuery,
+    signal: AbortSignal,
+  ): Promise<AiConversationSearchMatch[]> {
+    return this.withClient(signal, async (client) => {
+      const { rows } = await client.query<{
+        session_id: string;
+        run_id: string;
+        user_text: string;
+        assistant_text: string;
+        started_at: string | null;
+      }>(
+        `
+        SELECT s.id AS session_id, t.run_id, t.user_text, t.assistant_text, r.started_at
+        FROM nest_ai_middleware.chat_sessions s
+        JOIN nest_ai_middleware.chat_turns t ON t.session_id = s.id
+        LEFT JOIN nest_ai_middleware.runs r ON r.run_id = t.run_id AND r.session_id = s.id
+        CROSS JOIN LATERAL (
+          SELECT count(*) AS score FROM unnest($4::text[]) AS keywords(keyword)
+          WHERE strpos(lower(t.user_text), lower(keyword)) > 0
+             OR strpos(lower(t.assistant_text), lower(keyword)) > 0
+        ) AS matched
+        WHERE s.subject_id = $1 AND s.tenant_id IS NOT DISTINCT FROM $2
+          AND s.id <> $3 AND matched.score > 0
+        ORDER BY matched.score DESC, r.started_at DESC NULLS LAST, s.id DESC, t.run_id DESC
+        LIMIT $5
+      `,
+        [
+          caller.subjectId,
+          caller.tenantId ?? null,
+          excludeSessionId,
+          keywords,
+          limit,
+        ],
+      );
+      return rows.map((row) => ({
+        sessionId: row.session_id,
+        turnId: row.run_id,
+        user: row.user_text,
+        assistant: row.assistant_text,
+        startedAt: row.started_at === null ? null : Number(row.started_at),
       }));
     });
   }

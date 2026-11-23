@@ -35,6 +35,7 @@ import {
   appendAttachmentNotes,
   prepareAttachments,
 } from "./ai-attachments.js";
+import { createHistoryTools } from "./ai-history-tools.js";
 import { AiRunContext } from "./ai-run-context.js";
 
 function runFailure(error: unknown, signal: AbortSignal) {
@@ -269,6 +270,13 @@ export class AiOrchestrator {
       run,
       runOptions,
       limits,
+      answerEvaluator: this.options.answerEvaluator,
+      historyTools: createHistoryTools(
+        this.options.database?.adapter,
+        identifiers.sessionId,
+        run,
+        this.options.execution.toolTimeoutMs,
+      ),
     });
     run.screenOutput(answer.message);
     const reply: AiRunResult = { ...answer, ...identifiers };

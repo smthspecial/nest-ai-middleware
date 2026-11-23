@@ -81,6 +81,115 @@ async function fixture({
 const caller = { subjectId: "analyst", tenantId: "store-a" };
 const context = { caller, contextId: ContextIdFactory.create() };
 
+it("recalls selected turns from other sessions for the same caller and keeps application tools available on a miss", async () => {
+  const { module, ai } = await fixture({
+    model: {
+      capabilities: { toolCalling: true },
+      async generate({ messages, tools }) {
+        const last = messages.at(-1);
+        if (last?.role === "user" && last.content.startsWith("Save")) {
+          return {
+            kind: "final",
+            message: "Original answer for this saved turn.",
+          };
+        }
+        if (last?.role === "user") {
+          expect(tools.map(({ name }) => name)).toEqual([
+            "report",
+            "nest_ai_search_history",
+            "nest_ai_load_history",
+          ]);
+          return {
+            kind: "tool-calls",
+            toolCalls: [
+              {
+                id: "search",
+                name: "nest_ai_search_history",
+                arguments: {
+                  keywords: [
+                    last.content === "Recall" ? "billing" : "unmatched",
+                  ],
+                },
+              },
+            ],
+          };
+        }
+        if (last?.role === "tool" && last.name === "nest_ai_search_history") {
+          expect(last.result.ok).toBe(true);
+          if (!last.result.ok) throw new Error(last.result.code);
+          const { candidates } = last.result.data as {
+            candidates: { candidateId: string; userPreview: string }[];
+          };
+          if (!candidates.length) {
+            return {
+              kind: "tool-calls",
+              toolCalls: [{ id: "report", name: "report", arguments: {} }],
+            };
+          }
+          expect(candidates.map(({ userPreview }) => userPreview)).toEqual([
+            "Save previous billing question",
+          ]);
+          expect(JSON.stringify(last.result)).not.toContain(
+            "Original answer for this saved turn.",
+          );
+          return {
+            kind: "tool-calls",
+            toolCalls: [
+              {
+                id: "load",
+                name: "nest_ai_load_history",
+                arguments: { candidateId: candidates[0].candidateId },
+              },
+            ],
+          };
+        }
+        if (last?.role === "tool" && last.name === "nest_ai_load_history") {
+          expect(last.result).toMatchObject({
+            ok: true,
+            data: {
+              user: "Save previous billing question",
+              assistant: "Original answer for this saved turn.",
+            },
+          });
+          return { kind: "final", message: "Found the saved billing answer." };
+        }
+        expect(last).toMatchObject({ role: "tool", name: "report" });
+        return { kind: "final", message: "Used the report tool." };
+      },
+    },
+  });
+  try {
+    await ai.sendMessage("Save previous billing question", context);
+    await ai.sendMessage("Save private billing question from another tenant", {
+      ...context,
+      caller: { ...caller, tenantId: "store-b" },
+    });
+    await ai.sendMessage("Save private billing question from another subject", {
+      ...context,
+      caller: { ...caller, subjectId: "other" },
+    });
+    const active = await ai.sendMessage(
+      "Save active billing question",
+      context,
+    );
+
+    await expect(
+      ai.sendMessage("Recall", context, { sessionId: active.sessionId! }),
+    ).resolves.toMatchObject({
+      message: "Found the saved billing answer.",
+      tools: ["nest_ai_search_history", "nest_ai_load_history"],
+    });
+    await expect(
+      ai.sendMessage("Find missing history", context),
+    ).resolves.toMatchObject({
+      message: "Used the report tool.",
+      tools: ["nest_ai_search_history", "report"],
+    });
+  } finally {
+    await module.close();
+  }
+});
+
 it("applies environment overrides to stored leases, transcript pages, previews and run events", async () => {
   const env = jest.replaceProperty(process, "env", {
     ...process.env,

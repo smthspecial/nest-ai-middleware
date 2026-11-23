@@ -5,20 +5,26 @@ import type {
   AiModel,
   AiModelResponse,
   AiToolCall,
+  AiToolDefinition,
   AiToolResult,
 } from "../contracts/ai-model.js";
 import type { AiRunOptions, AiRunResult } from "../contracts/ai-run.js";
-import type { JsonObject } from "../contracts/json.types.js";
+import type { JsonObject, JsonValue } from "../contracts/json.types.js";
 import { AiToolError, snapshot } from "../executor/ai-tool-executor.js";
 import type { AiToolExecutor } from "../executor/ai-tool-executor.js";
 import { AiModelError } from "../model/ai-model-error.js";
 import { AiSecurityError } from "../security/prompt-security.js";
+import { reviewAndReviseAnswer } from "./ai-answer-evaluator.js";
 import type { AiRunContext } from "./ai-run-context.js";
 
 type ValidatedToolCall = AiToolCall & { arguments: JsonObject };
 type ToolCallResponse = Extract<AiModelResponse, { kind: "tool-calls" }>;
 type ModelAnswer = Pick<AiRunResult, "message" | "tools" | "toolIds">;
 type UsedTool = { name: string; id: string };
+type AvailableTool = {
+  definition: AiToolDefinition & { id: string };
+  execute: (args: JsonObject) => JsonValue | Promise<JsonValue>;
+};
 
 interface ModelLoopOptions {
   messages: AiMessage[];
@@ -27,10 +33,12 @@ interface ModelLoopOptions {
   run: AiRunContext;
   runOptions: AiRunOptions;
   limits: AiRuntimeLimits;
+  historyTools: readonly AvailableTool[];
+  answerEvaluator: AiModel | undefined;
 }
 
 interface ToolCallState {
-  availableToolIds: ReadonlyMap<string, string>;
+  availableTools: ReadonlyMap<string, AvailableTool>;
   seenCallIds: Set<string>;
   usedTools: UsedTool[];
 }
@@ -53,14 +61,14 @@ export function assertAnswerText(
 export async function runModelLoop(
   options: ModelLoopOptions,
 ): Promise<ModelAnswer> {
-  const { messages, model, executor, run, limits } = options;
+  const { messages, model, run, limits, answerEvaluator } = options;
   messages.unshift({ role: "system", content: chatResponseInstructions });
-  const tools = await executor.discover(
-    run.invocation,
-    run.invocation.abortSignal,
-  );
+  const available = await discoverRunTools(options);
+  const tools = available.map(({ definition }) => definition);
   const toolState: ToolCallState = {
-    availableToolIds: new Map(tools.map(({ name, id }) => [name, id])),
+    availableTools: new Map(
+      available.map((tool) => [tool.definition.name, tool]),
+    ),
     seenCallIds: new Set(),
     usedTools: [],
   };
@@ -72,11 +80,18 @@ export async function runModelLoop(
     });
 
     if (response?.kind === "final") {
-      return finalizeAnswer(
-        response.message,
-        toolState.usedTools,
-        limits.maxAnswerBytes,
-      );
+      assertAnswerText(response.message, limits.maxAnswerBytes);
+      const message = answerEvaluator
+        ? await reviewAndReviseAnswer(
+            model,
+            answerEvaluator,
+            messages,
+            response.message,
+            run,
+            limits.maxAnswerBytes,
+          )
+        : response.message;
+      return finalizeAnswer(message, toolState.usedTools);
     }
 
     if (response?.kind !== "tool-calls" || round === limits.maxModelRounds) {
@@ -89,12 +104,34 @@ export async function runModelLoop(
   throw new AiModelError("MODEL_PROTOCOL_ERROR");
 }
 
+async function discoverRunTools({
+  executor,
+  run,
+  historyTools,
+}: ModelLoopOptions): Promise<readonly AvailableTool[]> {
+  const applicationTools = await executor.discover(
+    run.invocation,
+    run.invocation.abortSignal,
+  );
+  const hasCollision = historyTools.some(({ definition }) =>
+    applicationTools.some(
+      ({ name, id }) => name === definition.name || id === definition.id,
+    ),
+  );
+  return [
+    ...applicationTools.map((definition) => ({
+      definition,
+      execute: (args: JsonObject) =>
+        executor.execute(definition.name, args, run.invocation),
+    })),
+    ...(hasCollision ? [] : historyTools),
+  ];
+}
+
 function finalizeAnswer(
   message: string,
   usedTools: readonly UsedTool[],
-  maxAnswerBytes: number,
 ): ModelAnswer {
-  assertAnswerText(message, maxAnswerBytes);
   return {
     message,
     tools: Object.freeze(usedTools.map(({ name }) => name)),
@@ -104,8 +141,8 @@ function finalizeAnswer(
 
 async function runToolRound(
   response: ToolCallResponse,
-  { messages, executor, run, runOptions, limits }: ModelLoopOptions,
-  { availableToolIds, seenCallIds, usedTools }: ToolCallState,
+  { messages, run, runOptions, limits }: ModelLoopOptions,
+  { availableTools, seenCallIds, usedTools }: ToolCallState,
 ): Promise<void> {
   const calls = validateToolCalls(response.toolCalls, seenCallIds, limits);
   screenToolRequest(response.message, calls, run, limits.maxAnswerBytes);
@@ -121,8 +158,9 @@ async function runToolRound(
   });
 
   for (const call of calls) {
-    const toolId = availableToolIds.get(call.name);
-    const result = await invokeTool(executor, call, toolId, run, runOptions);
+    const tool = availableTools.get(call.name);
+    const toolId = tool?.definition.id;
+    const result = await invokeTool(call, tool, run, runOptions);
     if (result.ok && toolId) {
       usedTools.push({ name: call.name, id: toolId });
     }
@@ -183,9 +221,8 @@ function screenToolRequest(
 }
 
 async function invokeTool(
-  executor: AiToolExecutor,
-  call: AiToolCall,
-  toolId: string | undefined,
+  call: ValidatedToolCall,
+  tool: AvailableTool | undefined,
   run: AiRunContext,
   runOptions: AiRunOptions,
 ): Promise<AiToolResult> {
@@ -193,12 +230,8 @@ async function invokeTool(
   const invocationId = randomUUID();
   const startedAt = performance.now();
   const { name } = call;
-  const { result, securityError } = await attemptToolCall(
-    executor,
-    call,
-    toolId,
-    run.invocation,
-  );
+  const toolId = tool?.definition.id;
+  const { result, securityError } = await attemptToolCall(tool, call.arguments);
 
   await run.record?.append({
     kind: "tool_attempt",
@@ -233,15 +266,13 @@ async function invokeTool(
 }
 
 async function attemptToolCall(
-  executor: AiToolExecutor,
-  { name, arguments: input }: AiToolCall,
-  toolId: string | undefined,
-  invocation: AiRunContext["invocation"],
+  tool: AvailableTool | undefined,
+  input: JsonObject,
 ): Promise<{ result: AiToolResult; securityError?: AiSecurityError }> {
-  if (!toolId) return { result: { ok: false, code: "TOOL_UNAVAILABLE" } };
+  if (!tool) return { result: { ok: false, code: "TOOL_UNAVAILABLE" } };
 
   try {
-    const data = await executor.execute(name, input, invocation);
+    const data = await tool.execute(input);
     return { result: { ok: true, data } };
   } catch (error) {
     if (error instanceof AiSecurityError) {

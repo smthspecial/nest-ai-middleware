@@ -10,6 +10,8 @@ import type {
 export interface AiModuleOptions {
   /** The chat model must declare capabilities.toolCalling: true. */
   model: AiModel;
+  /** Reviews proposed answers and gives feedback for one revision when needed. */
+  answerEvaluator?: AiModel;
   attachmentModels?: AiAttachmentModels;
   attachmentStorage?: AiAttachmentStorageOptions;
   database?: AiDatabaseOptions;

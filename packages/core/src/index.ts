@@ -57,6 +57,8 @@ export type {
   AiConversationListPage,
   AiConversationListQuery,
   AiConversationPage,
+  AiConversationSearchMatch,
+  AiConversationSearchQuery,
   AiConversationSession,
   AiConversationSummary,
   AiConversationTurn,

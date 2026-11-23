@@ -26,12 +26,17 @@ flowchart TD
     HasFiles -->|"No: question and history"| Model["2. runModelLoop()"]
     Files -->|User message with notes and history| Model
     Model -->|Execution-time guard denies a call| Denied["3. Wrap the tool denial"]
+    Model -->|Model needs an earlier conversation| Recall["8. Search other sessions and load a selected turn"]
+    Recall -->|Search or load result| Model
+    Store -->|Saved turns for the verified owner| Recall
     Denied -.->|Tool error in messages| Model
     Model -->|Tool request fails screening| Rejected["6. Record run rejection when possible"]
     Rejected -->|If a session lease is held| Release["4b. Attempt to release the lease"]
     Rejected -->|Stateless run| Error(["Propagate the error to the host"])
     Release --> Error
-    Model -->|Final answer| Present["answerRequest() screens and presents the answer"]
+    Model -->|Draft with an evaluator configured| Review["9. Evaluate the draft and optionally revise it"]
+    Review -->|Selected draft| Present["answerRequest() screens and presents the answer"]
+    Model -->|Final answer without an evaluator| Present
     Present -->|Session held| Save["4b. saveTurn() saves the turn and clears the lease"]
     Present -->|Stateless run| Reply(["Return AiRunResult"])
     Save -->|Result includes sessionId| Reply
@@ -41,7 +46,7 @@ flowchart TD
     Store -->|Caller-scoped records| Reads
 ```
 
-[1. Startup](#1-register-the-module-and-discover-tools) · [2. Model and tool loop](#2-answer-from-context-call-a-tool-or-return-a-fallback) · [3. Tool denial](#3-handle-an-execution-time-tool-denial) · [4. Session lifecycle](#4-manage-the-conversation-session) · [5. Attachments](#5-process-inline-files-and-stored-attachments) · [6. Run rejection](#6-reject-a-run-when-tool-request-screening-fails) · [7. Stored reads](#7-read-stored-conversations-and-run-records)
+[1. Startup](#1-register-the-module-and-discover-tools) · [2. Model and tool loop](#2-answer-from-context-call-a-tool-or-return-a-fallback) · [3. Tool denial](#3-handle-an-execution-time-tool-denial) · [4. Session lifecycle](#4-manage-the-conversation-session) · [5. Attachments](#5-process-inline-files-and-stored-attachments) · [6. Run rejection](#6-reject-a-run-when-tool-request-screening-fails) · [7. Stored reads](#7-read-stored-conversations-and-run-records) · [8. History recall](#8-recall-a-turn-from-another-session) · [9. Answer evaluation](#9-evaluate-the-answer-before-presentation)
 
 ## 1. Register the module and discover tools
 
@@ -69,10 +74,14 @@ flowchart TD
     Host(["AiChatService.sendMessage()"]) -->|Message, verified caller context and options| Run["AiOrchestrator.run() prepares the model input"]
     Run -->|Prepared messages and caller context| Start["runModelLoop() adds chat response instructions"]
     Start --> Discover["AiToolExecutor.discover() checks service and method guards"]
-    Discover -->|Messages and allowed tool definitions| Model["AiRunContext.callModel()"]
+    Discover --> Merge["Include history tools when available"]
+    Merge -->|Messages and allowed tool definitions| Model["AiRunContext.callModel()"]
     Model -->|AiModelResponse| Kind{"Response kind and round budget?"}
-    Kind -->|"final: answer from context or tool results, or fallback"| Final["finalizeAnswer() validates text and collects successful tool IDs"]
-    Final -->|Message, tools and toolIds| Present["answerRequest() screens and presents the answer"]
+    Kind -->|"final: answer from context or tool results, or fallback"| Final["assertAnswerText() validates the proposed answer"]
+    Final -->|Evaluator configured| Review["9. Review the draft and optionally revise it"]
+    Review -->|Selected draft| Assemble["finalizeAnswer() collects successful tool IDs"]
+    Final -->|Evaluator absent| Assemble
+    Assemble -->|Message, tools and toolIds| Present["answerRequest() screens and presents the answer"]
     Present -->|Session held| Save["4b. AiConversationSessions.finish() saves the accepted turn"]
     Save -->|Turn committed| Reply(["Return AiRunResult to host"])
     Present -->|Stateless run| Reply
@@ -80,6 +89,8 @@ flowchart TD
     ToolRound --> Screen["validateToolCalls() then screenToolRequest()"]
     Kind -->|Unexpected kind or tool calls on the last round| Error(["Throw MODEL_PROTOCOL_ERROR"])
     Screen -->|Screened calls with IDs, names and arguments| Invoke["invokeTool() delegates to attemptToolCall()"]
+    Invoke -->|Internal history call| Recall["8. Search or load history and record the result"]
+    Recall --> Append
     Invoke -->|Tool name, arguments and Nest context| Execute["AiToolExecutor.execute() validates arguments and rechecks guards"]
     Execute -->|Arguments pass screening| Service["invokeServiceMethod() resolves the service in the original contextId and calls it"]
     Service -->|JSON snapshot| Result["execute() screens the result and invokeTool() records the attempt"]
@@ -210,3 +221,40 @@ flowchart TD
 ```
 
 These are separate host calls that retrieve the committed turns and run records. Each cursor belongs to its own result type. [Session lifecycle](#4-manage-the-conversation-session), [chat service](../../../packages/core/src/services/ai-chat.service.ts), [run reader](../../../packages/core/src/logging/ai-run-reader.ts).
+
+## 8. Recall a turn from another session
+
+An active session and a database adapter that implements `searchConversationTurns()` make recall available. The model chooses when to search. The adapter searches the verified caller's committed turns across other sessions and returns at most five matches. `createHistoryTools()` holds those turns for the current run and gives the model question previews and keyword matches. Only a later load call with a candidate ID can put that candidate's full question and answer into context. [Session lifecycle](#4-manage-the-conversation-session) · [History tools](../../../packages/core/src/orchestrator/ai-history-tools.ts).
+
+```mermaid
+flowchart TD
+    Model["2. Chat model sees the current transcript and available tools"] --> Need{"Does the request need earlier sessions?"}
+    Need -->|Yes| Search["Call nest_ai_search_history with keywords"]
+    Search --> Query["searchConversationTurns() scopes matches to the user and tenant"]
+    Query --> Preview["Return previews and keep the full matches in the run"]
+    Preview --> Relevant{"Model finds a relevant candidate?"}
+    Relevant -->|Yes| Load["Call nest_ai_load_history with the candidate ID"]
+    Load -->|Screened question and answer as a tool result| Model
+    Relevant -->|No| Proceed["Continue with regular tools or answer"]
+    Need -->|No| Proceed
+```
+
+## 9. Evaluate the answer before presentation
+
+When `answerEvaluator` is configured, `reviewAndReviseAnswer()` compares the proposed answer to the current request and the evidence available in the run. A low score triggers one text-only revision. A valid revised draft receives a second review, and the higher-scoring draft proceeds to presentation and session save. [Model loop](#2-answer-from-context-call-a-tool-or-return-a-fallback) · [Evaluator](../../../packages/core/src/orchestrator/ai-answer-evaluator.ts).
+
+```mermaid
+flowchart TD
+    Draft["2. Model returns a proposed answer"] --> Review["Evaluator scores the draft against the request and evidence"]
+    Review --> Complete{"Draft meets the request?"}
+    Complete -->|Yes| Present["answerRequest() screens and presents the selected draft"]
+    Complete -->|No| Revise["Chat model revises once using feedback and existing evidence"]
+    Revise --> Changed{"Valid draft with changed text?"}
+    Changed -->|No, keep original draft| Present
+    Changed -->|Yes| Recheck["Evaluator scores the revised draft"]
+    Recheck --> Select["Keep the higher-scoring draft"]
+    Select --> Present
+    Present -->|Session held| Save["4b. Save the accepted turn"]
+    Present -->|Stateless run| Reply["Return AiRunResult"]
+    Save --> Reply
+```

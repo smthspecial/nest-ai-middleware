@@ -3,6 +3,8 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   AiCaller,
   AiConversationListQuery,
+  AiConversationSearchMatch,
+  AiConversationSearchQuery,
   AiConversationSession,
   AiConversationSummary,
   AiConversationTurnQuery,
@@ -113,6 +115,16 @@ export class SqliteDatabaseAdapter implements AiDatabaseAdapter {
     try {
       this.transaction(() => applySqliteMigrations(this.db));
       this.db.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
+      this.db.function(
+        "ai_keyword_match",
+        { deterministic: true },
+        (value, keyword) =>
+          Number(
+            typeof value === "string" &&
+              typeof keyword === "string" &&
+              value.toLowerCase().includes(keyword.toLowerCase()),
+          ),
+      );
     } catch (error) {
       this.db.close();
       throw error;
@@ -278,6 +290,39 @@ export class SqliteDatabaseAdapter implements AiDatabaseAdapter {
         ...(before ? [before.updatedAt, before.sessionId] : []),
         limit,
       ) as unknown as AiConversationSummary[];
+  }
+
+  searchConversationTurns(
+    caller: AiCaller,
+    { excludeSessionId, keywords, limit }: AiConversationSearchQuery,
+    signal: AbortSignal,
+  ): AiConversationSearchMatch[] {
+    signal.throwIfAborted();
+    return this.db
+      .prepare(
+        `
+        WITH matches AS (
+          SELECT s.id AS sessionId, t.run_id AS turnId, t.user_text AS user,
+                 t.assistant_text AS assistant, r.started_at AS startedAt,
+                 (SELECT count(*) FROM json_each(?) AS keyword
+                  WHERE ai_keyword_match(t.user_text, keyword.value)
+                     OR ai_keyword_match(t.assistant_text, keyword.value)) AS score
+          FROM ai_chat_sessions s
+          JOIN ai_chat_turns t ON t.session_id = s.id
+          LEFT JOIN ai_runs r ON r.run_id = t.run_id AND r.session_id = s.id
+          WHERE s.subject_id = ? AND s.tenant_id IS ? AND s.id <> ?
+        )
+        SELECT sessionId, turnId, user, assistant, startedAt FROM matches
+        WHERE score > 0 ORDER BY score DESC, startedAt DESC, sessionId DESC, turnId DESC LIMIT ?
+      `,
+      )
+      .all(
+        JSON.stringify(keywords),
+        caller.subjectId,
+        caller.tenantId ?? null,
+        excludeSessionId,
+        limit,
+      ) as unknown as AiConversationSearchMatch[];
   }
 
   startRun(runId: string, startedAt: number, signal: AbortSignal): void {

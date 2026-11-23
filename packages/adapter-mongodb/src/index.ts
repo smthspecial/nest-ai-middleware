@@ -3,6 +3,8 @@ import type { ClientSession, Collection, MongoClient } from "mongodb";
 import type {
   AiCaller,
   AiConversationListQuery,
+  AiConversationSearchMatch,
+  AiConversationSearchQuery,
   AiConversationSession,
   AiConversationSummary,
   AiConversationTurnQuery,
@@ -303,6 +305,93 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
             : []),
           { $sort: { updatedAt: -1, sessionId: -1 } },
           { $limit: limit },
+        ],
+        { signal },
+      )
+      .toArray();
+  }
+
+  async searchConversationTurns(
+    caller: AiCaller,
+    { excludeSessionId, keywords, limit }: AiConversationSearchQuery,
+    signal: AbortSignal,
+  ): Promise<AiConversationSearchMatch[]> {
+    signal.throwIfAborted();
+    const matches = keywords.map((keyword) => ({
+      $cond: [
+        {
+          $regexMatch: {
+            input: { $concat: ["$user", "\n", "$assistant"] },
+            regex: keyword.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"),
+            options: "i",
+          },
+        },
+        1,
+        0,
+      ],
+    }));
+    return this.sessions
+      .aggregate<AiConversationSearchMatch>(
+        [
+          {
+            $match: {
+              _id: { $ne: excludeSessionId },
+              subjectId: caller.subjectId,
+              tenantId: caller.tenantId ?? null,
+              turnCount: { $gt: 0 },
+            },
+          },
+          {
+            $lookup: {
+              from: this.turns.collectionName,
+              localField: "_id",
+              foreignField: "sessionId",
+              as: "turn",
+              pipeline: [
+                { $set: { score: { $sum: matches } } },
+                { $match: { score: { $gt: 0 } } },
+                {
+                  $lookup: {
+                    from: this.runs.collectionName,
+                    localField: "_id",
+                    foreignField: "_id",
+                    as: "run",
+                    pipeline: [{ $project: { startedAt: 1 } }],
+                  },
+                },
+                {
+                  $set: {
+                    startedAt: {
+                      $ifNull: [{ $first: "$run.startedAt" }, null],
+                    },
+                  },
+                },
+                { $sort: { score: -1, startedAt: -1, _id: -1 } },
+                { $limit: limit },
+                { $project: { score: 1, startedAt: 1, user: 1, assistant: 1 } },
+              ],
+            },
+          },
+          { $unwind: "$turn" },
+          {
+            $sort: {
+              "turn.score": -1,
+              "turn.startedAt": -1,
+              _id: -1,
+              "turn._id": -1,
+            },
+          },
+          { $limit: limit },
+          {
+            $project: {
+              _id: 0,
+              sessionId: "$_id",
+              turnId: "$turn._id",
+              startedAt: "$turn.startedAt",
+              user: "$turn.user",
+              assistant: "$turn.assistant",
+            },
+          },
         ],
         { signal },
       )

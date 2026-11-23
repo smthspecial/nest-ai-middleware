@@ -138,8 +138,14 @@ export function validateOptions(
     throw new TypeError("AiModule options must be an object.");
   }
 
-  const { model, attachmentModels, attachmentStorage, database, logger } =
-    options;
+  const {
+    model,
+    answerEvaluator,
+    attachmentModels,
+    attachmentStorage,
+    database,
+    logger,
+  } = options;
   if (
     typeof model?.generate !== "function" ||
     model.capabilities?.toolCalling !== true
@@ -155,6 +161,13 @@ export function validateOptions(
     throw new TypeError(
       "AiModule model capabilities.structuredOutput must be a boolean when supplied.",
     );
+  }
+  if (
+    answerEvaluator !== undefined &&
+    (typeof answerEvaluator?.generate !== "function" ||
+      typeof answerEvaluator.capabilities?.toolCalling !== "boolean")
+  ) {
+    throw new TypeError("AiModule answerEvaluator must implement AiModel.");
   }
   if ("authorization" in options) {
     throw new TypeError(
@@ -198,6 +211,7 @@ export function validateOptions(
 
   return Object.freeze({
     model,
+    ...(answerEvaluator === undefined ? {} : { answerEvaluator }),
     ...(attachmentModels === undefined
       ? {}
       : { attachmentModels: validateAttachmentModels(attachmentModels) }),

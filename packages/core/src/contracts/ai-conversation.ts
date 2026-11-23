@@ -15,6 +15,18 @@ export interface AiConversationTurnRecord extends AiStoredConversationTurn {
   readonly position: number;
 }
 
+export interface AiConversationSearchQuery {
+  readonly excludeSessionId: string;
+  readonly keywords: readonly string[];
+  readonly limit: number;
+}
+
+export interface AiConversationSearchMatch extends AiConversationTurn {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly startedAt: number | null;
+}
+
 export type AiConversationTurnQuery = {
   readonly after: number;
   readonly limit: number;

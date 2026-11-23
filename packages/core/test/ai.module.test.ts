@@ -24,6 +24,60 @@ const HOST_MODEL = Symbol("HOST_MODEL");
 class HostDependenciesModule {}
 
 describe("AiModule", () => {
+  it("reviews the draft against the question and returns an improved revision without requiring storage", async () => {
+    const question = "Give the due date and owner.";
+    const draft = "The due date is Friday.";
+    const revision = "The due date is Friday. The owner is unknown.";
+    const chatModel = jest
+      .fn<AiModel["generate"]>()
+      .mockResolvedValueOnce({ kind: "final", message: draft })
+      .mockResolvedValueOnce({ kind: "final", message: revision });
+    const review = jest
+      .fn<AiModel["generate"]>()
+      .mockResolvedValueOnce({
+        kind: "final",
+        message: '{"score":2,"feedback":"Address the missing owner."}',
+      })
+      .mockResolvedValueOnce({
+        kind: "final",
+        message: '{"score":3,"feedback":""}',
+      });
+    const fixture = await Test.createTestingModule({
+      imports: [
+        AiModule.forRoot({
+          model: { capabilities: { toolCalling: true }, generate: chatModel },
+          answerEvaluator: {
+            capabilities: { toolCalling: false },
+            generate: review,
+          },
+        }),
+      ],
+    }).compile();
+    try {
+      await fixture.init();
+      const chat = fixture.get(AiChatService);
+      await expect(
+        chat.sendMessage(question, {
+          caller: { subjectId: "reader" },
+          contextId: ContextIdFactory.create(),
+        }),
+      ).resolves.toMatchObject({ message: revision, tools: [] });
+      expect(chatModel.mock.calls[0][0].tools).toEqual([]);
+      expect(chatModel.mock.calls[1][0].tools).toEqual([]);
+      const reviewedDrafts = review.mock.calls.map(([{ messages }]) => {
+        const user = messages.find((message) => message.role === "user");
+        if (user?.role !== "user") throw new Error("Missing review input");
+        return JSON.parse(user.content);
+      });
+      expect(reviewedDrafts).toEqual([
+        expect.objectContaining({ request: question, draft }),
+        expect.objectContaining({ request: question, draft: revision }),
+      ]);
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("registers an initialized model with the default timeout", async () => {
     const registeredModule = AiModule.forRoot(options);
     const fixture = await Test.createTestingModule({

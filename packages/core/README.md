@@ -365,6 +365,12 @@ Use `AiChatService.listConversations(caller, after?)` to let a signed-in user ch
 
 Resuming a conversation sends all saved turns from the verified session to the model in order. `readConversation()` returns the complete saved transcript in pages. Without persistence, pass `history` directly to `sendMessage()`.
 
+SQLite, PostgreSQL, and MongoDB also support recall from other sessions for the same verified user and tenant. The model can call `nest_ai_search_history` with keywords when it needs information from an earlier conversation. It receives up to five question previews and can call `nest_ai_load_history` to use a selected question and answer in the current run. A search miss leaves the application tools available. Custom adapters can enable this by implementing `searchConversationTurns()`.
+
+### Answer evaluation
+
+Pass an `answerEvaluator` model alongside `model` in `AiModule.forRoot()` to review proposed replies. The evaluator receives the request, the run evidence, and the draft. It returns a JSON score and feedback. When the draft falls short, the chat model can make one text-only revision using the evidence it already has. The evaluator scores a revised draft before the middleware selects the reply and calls `presentAnswer`. Answer evaluation also works without database storage.
+
 ### Logging
 
 Pass your initialized `AiLogger` in `logger`. The interface has one method, `log(event: AiLogEvent)`. Events carry the verified subject, tenant when present, run ID, and session ID once ownership is established. The `input` and `output` events include accepted text. The `reasoning` events report observable tool calls and non-security run failures, including stable tool and invocation IDs when available. Security rejections are recorded through the database adapter. The host controls where accepted text is sent and how the sink retains it. Sink errors and timeouts leave the interaction available.

@@ -1,5 +1,7 @@
 import type {
   AiConversationListQuery,
+  AiConversationSearchMatch,
+  AiConversationSearchQuery,
   AiConversationSession,
   AiConversationSummary,
   AiConversationTurnQuery,
@@ -90,6 +92,13 @@ export interface AiDatabaseAdapter {
     query: AiConversationListQuery,
     signal: AbortSignal,
   ): Result<readonly AiConversationSummary[]>;
+
+  /** Searches committed turns belonging to the exact caller, excluding the active session. */
+  searchConversationTurns?(
+    caller: AiCaller,
+    query: AiConversationSearchQuery,
+    signal: AbortSignal,
+  ): Result<readonly AiConversationSearchMatch[]>;
 
   startRun(runId: string, startedAt: number, signal: AbortSignal): Result<void>;
   attachRunSession(
