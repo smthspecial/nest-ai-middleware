@@ -1,7 +1,7 @@
 {
   "name": "nest-ai-middleware-workspace",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "packageManager": "npm@11.20.0",
   "engines": {
@@ -17,7 +17,7 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "pack:packages": "npm run build && npm pack --workspaces",
-    "publish:local": "npm run format:check && npm run typecheck && npm test && node -e \"require('node:fs').mkdirSync('release/local', { recursive: true })\" && npm run pack:packages -- --pack-destination release/local --cache release/.npm-cache --offline"
+    "publish:npm": "npm publish --workspace=packages/core --workspace=packages/adapter-mongodb --workspace=packages/adapter-postgres --workspace=packages/adapter-sqlite --access=public --registry=https://registry.npmjs.org/"
   },
   "devDependencies": {
     "@jest/globals": "^30.5.2",
