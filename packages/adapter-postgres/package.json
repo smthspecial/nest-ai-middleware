@@ -2,6 +2,11 @@
   "name": "nestjs-ai-middleware-adapter-postgres",
   "version": "0.3.0",
   "description": "Postgres storage adapter for NestJS AI middleware",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/smthspecial/nest-ai-middleware.git",
+    "directory": "packages/adapter-postgres"
+  },
   "type": "module",
   "exports": {
     ".": {

@@ -1,3 +1,4 @@
+import { readAiIntegerEnv } from "nestjs-ai-middleware";
 import type { QueryResult, QueryResultRow } from "pg";
 import type {
   AiCaller,
@@ -49,13 +50,20 @@ interface RunRow {
   output: string | null;
 }
 
-const eventPageSize = 50;
-
 function ownerKey({ id, caller }: AiConversationSession) {
   return [id, caller.subjectId, caller.tenantId ?? null];
 }
 
 export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
+  private readonly eventPageSize = readAiIntegerEnv(
+    "RUN_EVENT_PAGE_SIZE",
+    50,
+    2_147_483_646,
+  );
+  private readonly previewChars = readAiIntegerEnv(
+    "CONVERSATION_PREVIEW_CHARS",
+    120,
+  );
   constructor(private readonly pool: PostgresPool) {}
 
   async initialize(): Promise<void> {
@@ -209,7 +217,7 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
       }>(
         `
         WITH owned AS (
-          SELECT s.id, left(first_turn.user_text, 120) AS preview, COALESCE(r.started_at, 0) AS updated_at
+          SELECT s.id, left(first_turn.user_text, $4) AS preview, COALESCE(r.started_at, 0) AS updated_at
           FROM nest_ai_middleware.chat_sessions s
           JOIN nest_ai_middleware.chat_turns first_turn ON first_turn.session_id = s.id AND first_turn.position = 1
           JOIN nest_ai_middleware.chat_turns last_turn ON last_turn.session_id = s.id AND last_turn.position = s.turn_count
@@ -217,13 +225,14 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
           WHERE s.subject_id = $1 AND s.tenant_id IS NOT DISTINCT FROM $2 AND s.turn_count > 0
         )
         SELECT id, preview, updated_at FROM owned
-        ${before ? "WHERE (updated_at, id) < ($4::bigint, $5::text)" : ""}
+        ${before ? "WHERE (updated_at, id) < ($5::bigint, $6::text)" : ""}
         ORDER BY updated_at DESC, id DESC LIMIT $3
       `,
         [
           caller.subjectId,
           caller.tenantId ?? null,
           limit,
+          this.previewChars,
           ...(before ? [before.updatedAt, before.sessionId] : []),
         ],
       );
@@ -311,9 +320,11 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
         `
         SELECT payload FROM nest_ai_middleware.run_events WHERE run_id = $1 AND sequence > $2 ORDER BY sequence LIMIT $3
       `,
-        [runId, after, eventPageSize + 1],
+        [runId, after, this.eventPageSize + 1],
       );
-      const events = rows.slice(0, eventPageSize).map((row) => row.payload);
+      const events = rows
+        .slice(0, this.eventPageSize)
+        .map((row) => row.payload);
       return {
         runId,
         sessionId: run.session_id,
@@ -325,7 +336,7 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
         ...(run.error_code !== null ? { errorCode: run.error_code } : {}),
         ...(run.output !== null ? { output: run.output } : {}),
         events,
-        ...(rows.length > eventPageSize
+        ...(rows.length > this.eventPageSize
           ? { nextAfter: events[events.length - 1].sequence }
           : {}),
       };

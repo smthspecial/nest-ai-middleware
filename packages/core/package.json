@@ -8,6 +8,11 @@
     "tool-calling",
     "sqlite"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/smthspecial/nest-ai-middleware.git",
+    "directory": "packages/core"
+  },
   "type": "module",
   "exports": {
     ".": {

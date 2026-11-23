@@ -34,7 +34,7 @@ import { Module } from "@nestjs/common";
 import { AiModule, type AiModel } from "nestjs-ai-middleware";
 
 const model: AiModel = {
-  capabilities: { toolCalling: false },
+  capabilities: { toolCalling: true },
   async generate() {
     return { kind: "final", message: "Offline model reply" };
   },
@@ -50,38 +50,86 @@ const model: AiModel = {
 export class AppModule {}
 ```
 
-Use `AiModule.forRootAsync({ imports, inject, useFactory })` when Nest providers supply the model or other dependencies. Host modules export the tokens listed in `inject`. Both registration methods validate their configuration during bootstrap. `execution.toolTimeoutMs` defaults to 10 seconds. Each chat run uses a 30-second deadline and allows up to 10 chat model calls and 20 proposed tool calls. Attachment extraction runs before the chat loop under the same deadline.
+Use `AiModule.forRootAsync({ imports, inject, useFactory })` when Nest providers supply the model or other dependencies. Host modules export the tokens listed in `inject`. Both registration methods validate their configuration during bootstrap. Attachment extraction shares the chat run deadline. See [environment settings](#environment-settings) for defaults and overrides.
+
+### Environment settings
+
+Set `NEST_AI_*` variables in the backend process before constructing `AiSdkModelAdapter` or a database adapter and before initializing `AiModule`. Pass the model, MIME-to-model mapping, database adapter, logger, and custom attachment adapter to `AiModule` as application dependencies. Use a Nest factory to construct those dependencies from application environment variables when needed.
+
+Boolean variables accept `true` or `false`, and numbers use positive decimal integers. Omit a variable to use its default. Invalid overrides fail during initialization. Explicit `AiSdkModelAdapter` options and database adapter constructor arguments take precedence over their environment defaults.
+
+When migrating, move `promptSecurity`, `execution`, and local `attachmentStorage` settings from `AiModule.forRoot()` or `forRootAsync()` to the environment.
+
+| Environment variable                     |                             Default | Controls                                                                                |
+| ---------------------------------------- | ----------------------------------: | --------------------------------------------------------------------------------------- |
+| `NEST_AI_PROMPT_SECURITY`                |                              `true` | Default for both prompt security switches                                               |
+| `NEST_AI_PROMPT_SECURITY_INPUT`          |  Inherits `NEST_AI_PROMPT_SECURITY` | Input screening                                                                         |
+| `NEST_AI_PROMPT_SECURITY_OUTPUT`         |  Inherits `NEST_AI_PROMPT_SECURITY` | Output screening                                                                        |
+| `NEST_AI_ALLOW_WRITES`                   |                             `false` | Allows registration of create and update tools                                          |
+| `NEST_AI_ATTACHMENT_STORAGE_ENABLED`     |     Enabled when a directory is set | Enables the local attachment store                                                      |
+| `NEST_AI_ATTACHMENT_STORAGE_DIRECTORY`   | `./assets/attachments` when enabled | Directory for local attachment files                                                    |
+| `NEST_AI_SDK_TOOL_CALLING`               |                              `true` | Tool-calling capability for `AiSdkModelAdapter`                                         |
+| `NEST_AI_SDK_INSTRUCTIONS`               |                               Unset | System instructions for `AiSdkModelAdapter`                                             |
+| `NEST_AI_SDK_PROVIDER_OPTIONS`           |                               Unset | JSON object keyed by provider name, with an options object per provider                 |
+| `NEST_AI_SQLITE_FILENAME`                |                               Unset | Filename when `SqliteDatabaseAdapter` is constructed without one                        |
+| `NEST_AI_MONGODB_DATABASE_NAME`          |                               Unset | Database name when `MongoDatabaseAdapter` receives only a client                        |
+| `NEST_AI_RUN_TIMEOUT_MS`                 |                               30000 | Deadline for each chat run, including extraction                                        |
+| `NEST_AI_RUN_LEASE_MS`                   |                               35000 | Lifetime of a stored conversation lease                                                 |
+| `NEST_AI_TOOL_TIMEOUT_MS`                |                               10000 | Deadline for each tool invocation                                                       |
+| `NEST_AI_MAX_MODEL_ROUNDS`               |                                  10 | Chat model rounds per run                                                               |
+| `NEST_AI_MAX_TOOL_CALLS`                 |                                  20 | Proposed tool calls per run                                                             |
+| `NEST_AI_MAX_ANSWER_BYTES`               |                               32768 | UTF-8 byte limit for an answer or model tool-request message                            |
+| `NEST_AI_MAX_JSON_DEPTH`                 |                                  24 | Maximum nesting depth for tool JSON and model continuation data, configurable up to 128 |
+| `NEST_AI_MAX_ATTACHMENT_NOTES_BYTES`     |                                8192 | UTF-8 byte limit per attachment-model response                                          |
+| `NEST_AI_ATTACHMENT_NOTES_TARGET_CHARS`  |                                2000 | Character target in the attachment extraction prompt                                    |
+| `NEST_AI_SDK_MAX_OUTPUT_TOKENS`          |                                1024 | Default output token limit for `AiSdkModelAdapter`                                      |
+| `NEST_AI_TRANSCRIPT_PAGE_SIZE`           |                                  50 | Stored turns per page                                                                   |
+| `NEST_AI_CONVERSATION_PAGE_SIZE`         |                                  20 | Conversation summaries per page                                                         |
+| `NEST_AI_CONVERSATION_PREVIEW_CHARS`     |                                 120 | Preview length in the bundled database adapters                                         |
+| `NEST_AI_RUN_EVENT_PAGE_SIZE`            |                                  50 | Run events per page in the bundled database adapters                                    |
+| `NEST_AI_STORE_READ_TIMEOUT_MS`          |                                5000 | Default deadline for public conversation and run reads                                  |
+| `NEST_AI_SESSION_RELEASE_TIMEOUT_MS`     |                                 250 | Deadline for releasing an abandoned conversation lease                                  |
+| `NEST_AI_BOOKKEEPING_TIMEOUT_MS`         |                                 100 | Budget for each run bookkeeping write                                                   |
+| `NEST_AI_LOG_TIMEOUT_MS`                 |                                 100 | Budget for each logger call                                                             |
+| `NEST_AI_SQLITE_MIGRATION_TIMEOUT_MS`    |                               30000 | SQLite lock wait during migration                                                       |
+| `NEST_AI_SQLITE_BUSY_TIMEOUT_MS`         |                                 100 | SQLite lock wait during regular use                                                     |
+| `NEST_AI_MONGODB_BOOKKEEPING_TIMEOUT_MS` |                                 100 | MongoDB driver deadline for bookkeeping writes                                          |
+| `NEST_AI_MONGODB_SESSION_TIMEOUT_MS`     |                                5000 | MongoDB driver deadline for session writes and transactions                             |
+
+The lease must exceed the run deadline. When `NEST_AI_RUN_LEASE_MS` is omitted, the lease is at least 35000 ms and at least 5000 ms longer than the configured run timeout.
 
 When upgrading, transfer existing tool authorization checks to Nest service guards and business methods. Remove the old `services`, `authorization`, and `selectConversationHistory` options and the old class, permission, and argument decorators. Declare tool inputs in `@AiTool()`. Replace any `argumentOrder` configuration with a method that takes one input object.
 
 ### Use a Vercel AI SDK model
 
-Install the AI SDK provider package for your model in the host app. Configure the provider with the host's credentials and wrap its V3 or V4 language model in the core `SdkModel` adapter. For example, with `@ai-sdk/openai` installed:
+Install the provider package in the host app, configure it, and pass the language model it creates to `AiSdkModelAdapter`. The adapter accepts `LanguageModelV4`, the provider interface used by AI SDK 7, and `LanguageModelV3` from earlier provider releases. [AI SDK provider versioning](https://github.com/vercel/ai/blob/main/contributing/pre-release-cycle.md).
 
 ```ts
 import { createOpenAI } from "@ai-sdk/openai";
-import { AiModule, SdkModel } from "nestjs-ai-middleware";
+import { AiModule, AiSdkModelAdapter } from "nestjs-ai-middleware";
 
 const openai = createOpenAI({ apiKey });
 
 AiModule.forRoot({
-  model: new SdkModel(openai.chat(modelId), {
-    instructions: "Use the catalog tools for product questions.",
+  model: new AiSdkModelAdapter(openai.chat(modelId), {
+    instructions: "Help users with the product catalog.",
     maxOutputTokens: 2048,
   }),
   database: { adapter },
 });
 ```
 
-Choose a tool-capable language model for tool use. Set `toolCalling: false` for a text-only model. Pass model-specific settings with `providerOptions` when needed. The adapter supports text generation and application-defined tool calls through the core executor. You can also provide any implementation of `AiModel`.
+Use the same constructor with a compatible model from `anthropic(modelId)` in `@ai-sdk/anthropic` or `ollama(modelId)` in `ollama-ai-provider-v2`. [OpenAI provider](https://ai-sdk.dev/providers/ai-sdk-providers/openai), [Anthropic provider](https://ai-sdk.dev/providers/ai-sdk-providers/anthropic), [Ollama providers](https://ai-sdk.dev/providers/community-providers/ollama).
+
+The chat model must declare `capabilities.toolCalling: true`. The middleware discovers the caller's eligible tools on every chat run, and the model can still answer from context or give a fallback. Attachment models can use `toolCalling: false`. You can also provide a custom `AiModel` or pass SDK-specific settings through `providerOptions`.
 
 ### Process images and PDFs
 
 Map each accepted full, lowercase MIME type to a file-capable SDK model in `attachmentModels`. Multiple types can share one model. The host decides which files it accepts, checks the file contents, and applies any upload limits.
 
 ```ts
-const image = new SdkModel(visionModel, { toolCalling: false });
-const pdf = new SdkModel(documentModel, { toolCalling: false });
+const image = new AiSdkModelAdapter(visionModel, { toolCalling: false });
+const pdf = new AiSdkModelAdapter(documentModel, { toolCalling: false });
 
 AiModule.forRoot({
   model,
@@ -105,7 +153,85 @@ await chat.sendMessage(
 
 Pass validated bytes as a `Uint8Array` or Node `Buffer`, with an optional host-selected filename. Pass an empty message to request a summary when files are attached. Map `AiAttachmentError` to the host's response format.
 
-Each configured attachment model receives the question and its assigned files with an empty tool list. The middleware checks the extracted text when input screening is enabled and includes the notes in the chat model's context. With storage enabled, the accepted turn includes those notes. The uploaded bytes stay in the current request and go to the configured attachment provider. [AI SDK file inputs](https://ai-sdk.dev/docs/foundations/prompts#file-parts)
+Each configured attachment model receives the question and its assigned files with an empty tool list. The middleware checks the extracted text when input screening is enabled and includes the notes in the chat model's context. A configured conversation store saves those notes in the accepted turn. Inline attachments are processed for the current request. [AI SDK file inputs](https://ai-sdk.dev/docs/foundations/prompts#file-parts)
+
+### Store and reuse attachments
+
+Set `NEST_AI_ATTACHMENT_STORAGE_ENABLED=true` to use `./assets/attachments` relative to the backend working directory. Set `NEST_AI_ATTACHMENT_STORAGE_DIRECTORY=/path/to/private/assets` to enable storage at a different location. The first save creates the folder. Keep the folder outside directories served over HTTP.
+
+```ts
+AiModule.forRoot({
+  model,
+  attachmentModels: { "application/pdf": pdf },
+});
+
+// Inject AiAttachmentService into your authenticated upload handler.
+const attachmentId = await storage.create(verifiedContext.caller, {
+  mediaType: "application/pdf",
+  data: pdfBytes,
+  filename: "report.pdf",
+});
+
+await chat.sendMessage("What numbers are in the report?", verifiedContext, {
+  attachmentIds: [attachmentId],
+});
+```
+
+`AiModule` exports `AiAttachmentService` for injection into your controllers and services. Return the ID to the client so it can reuse the attachment in a later request. Every operation receives the verified caller. The exact `subjectId` and `tenantId` determine ownership. `read(caller, id)` retrieves the file, `update(caller, id, file)` replaces it under the same ID, and `delete(caller, id)` removes it. These operations throw `AiAttachmentError` with code `ATTACHMENT_NOT_FOUND` for a missing file or a different owner. Blob lifetime is managed by the host and is independent of conversations.
+
+For object storage, pass `attachmentStorage: { adapter }` with your implementation of `AiAttachmentStorageAdapter`. The custom adapter takes precedence over local storage settings. Scope the adapter's operations by caller and ID. The adapter's `read` returns `undefined` for a missing record, and its `update` and `delete` return `false`. Storage works independently of `database.adapter`.
+
+#### Expose attachment metadata as an AI tool
+
+Register this provider in a host module that imports the configured `AiModule`. The tool takes an attachment ID and derives the caller from the authenticated request. Use `attachmentIds` when the model needs to interpret the file itself.
+
+```ts
+import {
+  Inject,
+  Injectable,
+  Scope,
+  UnauthorizedException,
+} from "@nestjs/common";
+import { REQUEST } from "@nestjs/core";
+import { AiAttachmentService, AiTool } from "nestjs-ai-middleware";
+
+@Injectable({ scope: Scope.REQUEST })
+export class AttachmentTools {
+  constructor(
+    @Inject(REQUEST) private readonly request: object,
+    private readonly storage: AiAttachmentService,
+  ) {}
+
+  @AiTool({
+    name: "get_attachment",
+    description:
+      "Get the filename, media type, and size of an attachment by ID.",
+    readOnly: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        attachmentId: { type: "string", minLength: 36, maxLength: 36 },
+      },
+      required: ["attachmentId"],
+      additionalProperties: false,
+    },
+  })
+  async getAttachment({ attachmentId }: { attachmentId: string }) {
+    const caller = verifiedCaller(this.request);
+    if (!caller) throw new UnauthorizedException();
+
+    const { mediaType, filename, data } = await this.storage.read(
+      caller,
+      attachmentId,
+    );
+    return {
+      mediaType,
+      filename: filename ?? null,
+      sizeBytes: data.byteLength,
+    };
+  }
+}
+```
 
 ### Connect an authenticated endpoint
 
@@ -166,7 +292,7 @@ export class SupportService {
 - `src/ai.module.ts` and `src/config/` handle Nest registration, startup validation, and building the tool registry. `src/decorators/` defines how host services declare their tools.
 - `src/orchestrator/ai-orchestrator.ts` coordinates a chat run and saves the final turn. The same directory contains the model and tool loop in `ai-answer.ts`, attachment processing in `ai-attachments.ts`, and per-run screening and model call tracking in `ai-run-context.ts`.
 - `src/security/`, `src/executor/`, `src/conversation/`, and `src/logging/` handle screening, tool dispatch, conversation storage, and run records.
-- `src/services/` contains the injectable `AiChatService` API for the host backend.
+- `src/services/` contains the injectable `AiChatService` and `AiAttachmentService` APIs for the host backend.
 
 ## Retail integration test
 
@@ -176,14 +302,7 @@ The local `test-app` workspace exercises the packed package through a Nest HTTP 
 
 Authenticate the host endpoint and derive `AiExecutionContext.caller` from the verified request. Pass the original request under `http` and use its Nest context ID. The executor runs `@UseGuards()` declared on the registered service class and tool method in class-first order, using the owning Nest module and original request scope. Guarded tools require HTTP context. Controller route guards apply on their own HTTP routes. Put resource checks that rely on validated tool arguments in the business service. [NestJS guards](https://docs.nestjs.com/guards)
 
-Input and output screening are both enabled by default. Configure the switches independently in the module options. Omitting either switch leaves it enabled. Set `promptSecurity: false` to turn off both checks.
-
-```ts
-AiModule.forRoot({
-  model,
-  promptSecurity: { input: true, output: true },
-});
-```
+Input and output screening are enabled by default. Set `NEST_AI_PROMPT_SECURITY_INPUT` or `NEST_AI_PROMPT_SECURITY_OUTPUT` to `false` to disable a single check. Set `NEST_AI_PROMPT_SECURITY=false` to disable both by default. A per-direction switch takes precedence over the shared setting.
 
 - `input` screens incoming messages, saved history, attachment notes, and tool results before they reach the chat model.
 - `output` screens model-generated tool requests and the final answer, including any changes from `presentAnswer`, before the answer is saved or returned.
@@ -221,7 +340,7 @@ findOrders({ customerId, limit = 10, ...filters }: {
 
 The model can supply `{ customerId: 'customer-1' }` and the method uses its default `limit`. Application code can call `findOrders({ limit: 5, customerId: 'customer-1' })` directly. Schema properties can describe nested objects, arrays, and constraints for tool input. Keep business rules that apply to every caller in the service.
 
-Read tools default to `operation: 'get'`. A host can opt in to `create` and `update` with `execution.allowWrites: true` and register specific tools with `readOnly: false` and an explicit `operation`. Check resource ownership and the applicable permissions in the service. The registry rejects `delete`. Leave delete, cascade-delete, and arbitrary SQL methods undecorated. Apply any required confirmation or idempotency in the host's write flow. The example exposes reads only.
+Read tools default to `operation: 'get'`. A host can opt in to `create` and `update` with `NEST_AI_ALLOW_WRITES=true` and register specific tools with `readOnly: false` and an explicit `operation`. Check resource ownership and the applicable permissions in the service. The registry rejects `delete`. Leave delete, cascade-delete, and arbitrary SQL methods undecorated. Apply any required confirmation or idempotency in the host's write flow. The example exposes reads only.
 
 Give each tool a stable ID with `@AiTool({ id: 'catalog.product-trend', ... })`. The registry checks uniqueness and uses the tool name as the ID when omitted. The `onToolResult` option runs during the current `sendMessage()` call and gives the calling backend the tool result, stable `toolId`, and generated `invocationId`. Input screening checks that result before the callback when enabled. The retail example uses it to assemble charts in the HTTP response. Each run returns its own `runId` and the IDs of the tools it executed successfully.
 
@@ -240,9 +359,9 @@ AiModule.forRoot({
 });
 ```
 
-Call `AiChatService.sendMessage()` with the verified caller to start a session. Only the creator can list, read, or resume that session. Access requires the same `subjectId` and `tenantId` that were recorded at creation. Keep the returned `sessionId` and pass it on each follow-up. The plugin saves each successful exchange, including the text returned by a host-supplied `presentAnswer` callback. If a run is already active in the session, a second request receives `SESSION_BUSY`. `AiChatService.readConversation(sessionId, caller, after?)` returns up to 50 complete turns. Start at cursor zero and follow `nextAfter` until omitted. Both a missing session and a session owned by another caller return `SESSION_UNAVAILABLE`.
+Call `AiChatService.sendMessage()` with the verified caller to start a session. Only the creator can list, read, or resume that session. Access requires the same `subjectId` and `tenantId` that were recorded at creation. Keep the returned `sessionId` and pass it on each follow-up. The plugin saves each successful exchange, including the text returned by a host-supplied `presentAnswer` callback. If a run is already active in the session, a second request receives `SESSION_BUSY`. `AiChatService.readConversation(sessionId, caller, after?)` returns up to 50 complete turns by default. Start at cursor zero and follow `nextAfter` until omitted. Both a missing session and a session owned by another caller return `SESSION_UNAVAILABLE`.
 
-Use `AiChatService.listConversations(caller, after?)` to let a signed-in user choose a previous conversation. It returns up to 20 summaries with the session ID, a preview of the first saved message, and the last saved turn's run time in Unix milliseconds. The bundled adapters limit the preview to 120 characters. A run time of zero indicates unavailable bookkeeping. Pass the returned `nextAfter` back unmodified for the next page. Pass the same verified caller to read or continue the selected session.
+Use `AiChatService.listConversations(caller, after?)` to let a signed-in user choose a previous conversation. By default, it returns up to 20 summaries with the session ID, a preview of the first saved message, and the last saved turn's run time in Unix milliseconds. The bundled adapters limit the preview to 120 characters by default. A run time of zero indicates unavailable bookkeeping. Pass the returned `nextAfter` back unmodified for the next page. Pass the same verified caller to read or continue the selected session.
 
 Resuming a conversation sends all saved turns from the verified session to the model in order. `readConversation()` returns the complete saved transcript in pages. Without persistence, pass `history` directly to `sendMessage()`.
 
@@ -271,8 +390,8 @@ AiModule.forRootAsync({
 });
 ```
 
-Implement the adapter with parameterized queries. Check the verified subject and tenant in owner-scoped reads and lease operations. Use a transaction for lease acquisition and turn finalization. Preserve the plugin-issued IDs, per-run event sequence, and Unix millisecond timestamps. Honor the supplied abort signals. Bookkeeping writes have a 100 ms budget and report failures through the configured logger. Omitting `database` disables persistence.
+Implement the adapter with parameterized queries. Check the verified subject and tenant in owner-scoped reads and lease operations. Use a transaction for lease acquisition and turn finalization. Preserve the plugin-issued IDs, per-run event sequence, and Unix millisecond timestamps. Honor the supplied abort signals. Bookkeeping writes have a default 100 ms budget and report failures through the configured logger. Omitting `database` disables persistence.
 
 ### Read stored output and logs
 
-Call `AiChatService.readRun(runId, verifiedCaller, after?)` after applying the host's authentication and authorization. The service scopes the result to the caller's subject and tenant through the associated session and returns the run status, accepted output, and committed model and tool events. Keep this result in the backend because it may include private rejection codes. The bundled adapters return up to 50 events per page. Start at cursor zero and follow `nextAfter` for further events. Missing and inaccessible runs both return `undefined`. The conversation and run read methods query the configured storage directly.
+Call `AiChatService.readRun(runId, verifiedCaller, after?)` after applying the host's authentication and authorization. The service scopes the result to the caller's subject and tenant through the associated session and returns the run status, accepted output, and committed model and tool events. Keep this result in the backend because it may include private rejection codes. The bundled adapters return up to 50 events per page by default. Start at cursor zero and follow `nextAfter` for further events. Missing and inaccessible runs both return `undefined`. The conversation and run read methods query the configured storage directly.

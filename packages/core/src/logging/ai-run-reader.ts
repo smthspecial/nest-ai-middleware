@@ -1,4 +1,6 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
+import { AI_MODULE_OPTIONS } from "../config/validate-options.js";
+import type { ValidatedAiModuleOptions } from "../config/validate-options.js";
 import type { AiCaller } from "../contracts/ai-execution-context.js";
 import type { AiRunPage } from "../contracts/ai-database.js";
 import { isAiSessionId } from "../conversation/ai-conversation-error.js";
@@ -16,13 +18,17 @@ export class AiRunReadError extends Error {
 
 @Injectable()
 export class AiRunReader {
-  constructor(private readonly database: AiDatabase) {}
+  constructor(
+    private readonly database: AiDatabase,
+    @Inject(AI_MODULE_OPTIONS)
+    private readonly options: ValidatedAiModuleOptions,
+  ) {}
 
   async readRun(
     runId: string,
     caller: AiCaller,
     after = 0,
-    signal = AbortSignal.timeout(5000),
+    signal = AbortSignal.timeout(this.options.limits.storeReadTimeoutMs),
   ): Promise<AiRunPage | undefined> {
     if (!Number.isSafeInteger(after) || after < 0)
       throw new TypeError("Invalid run event cursor.");

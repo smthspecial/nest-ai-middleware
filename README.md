@@ -11,7 +11,7 @@ The middleware runs inside a Nest backend. Add `@AiTool()` to methods on existin
 
 The host initializes the selected adapter and passes it as `database.adapter` to `AiModule`. Pending schema migrations run when SQLite opens the file or when the host awaits `initialize()` on the PostgreSQL or MongoDB adapter. Each adapter tracks its own schema version and upgrades existing middleware storage in place. PostgreSQL uses a dedicated schema and MongoDB uses prefixed collections, so an existing host database can hold the plugin's records alongside its own data.
 
-Register a custom `AiModel` or wrap an AI SDK language model in `SdkModel`. The host configures its provider and passes validated input and a verified caller to `AiChatService`. The same service exposes typed methods for reading saved conversations and run records. See the [core integration guide](packages/core/README.md).
+Register a custom `AiModel` or pass an AI SDK language model to `AiSdkModelAdapter`. The host configures its provider and passes validated input and a verified caller to `AiChatService`. The same service exposes typed methods for reading saved conversations and run records. [Core integration guide](packages/core/README.md).
 
 Prompt input and output checks are independently configurable and both enabled by default. A rejected chat returns a generic HTTP 500. With a database adapter configured, the middleware records the rejection code in the backend run record. See [prompt security](packages/core/README.md#access-and-prompt-security).
 
@@ -33,3 +33,13 @@ The last command builds and packs the workspace packages. The workspace root is 
 Run `npm run format` to apply Prettier. Use one blank line between groups of statements that do different jobs, such as validating input, preparing a request, and saving a result.
 
 Add schema changes as new steps at the end of each affected adapter's `src/migrations.ts`. Keep shipped steps in order. SQL steps run in a transaction. Make MongoDB steps safe to retry after partial completion. Check both a fresh database and an upgrade from the previous version with stored data.
+
+## Publish to npm
+
+Start the [release workflow](.github/workflows/publish.yml) manually from **Actions → Publish npm packages → Run workflow**. Enter an existing stable tag such as `v0.3.0` that matches all four package versions. The workflow builds and tests the tagged commit, dry-runs publication, and checks the packed packages on Node.js 24 and NestJS 11. Enable **Publish the verified archives to npm** to publish after those checks pass. The workflow publishes the core package first. [Running a workflow manually](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+
+For the first release, add a temporary npm stage-only token authorized to create the packages as the `NPM_BOOTSTRAP_TOKEN` secret in the GitHub `npm` environment. With publishing enabled, the workflow stages the archives for a maintainer to approve in npm using 2FA. [npm staged publishing](https://docs.npmjs.com/staged-publishing/) · [npm access tokens](https://docs.npmjs.com/about-access-tokens/)
+
+After the initial approval, configure a GitHub Actions trusted publisher in each package's npm settings. Use owner `smthspecial`, repository `nest-ai-middleware`, workflow filename `publish.yml`, and environment `npm`. Allow direct `npm publish`, then remove and revoke the bootstrap token. Subsequent manual releases use GitHub OIDC. [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/)
+
+Review the four versions and adapter peer ranges before tagging. The workflow can be rerun after a partial publish. It skips versions whose npm integrity matches the verified archive and fails if a version already contains different files.

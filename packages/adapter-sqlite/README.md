@@ -1,6 +1,6 @@
 # SQLite adapter for NestJS AI Middleware
 
-The local adapter uses Node.js 26's built-in `node:sqlite`. The host supplies the file path. The retail example uses `data/nest-ai-middleware.sqlite` in the plugin checkout.
+The local adapter uses the built-in `node:sqlite` on Node.js 24 and 26. The host supplies the file path. The retail example uses `data/nest-ai-middleware.sqlite` in the plugin checkout.
 
 ```ts
 import { SqliteDatabaseAdapter } from "nestjs-ai-middleware-adapter-sqlite";

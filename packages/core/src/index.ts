@@ -1,4 +1,5 @@
 export { AiModule } from "./ai.module.js";
+export { readAiEnv, readAiIntegerEnv } from "./config/environment.js";
 export { AiChatService } from "./services/ai-chat.service.js";
 export type {
   AiModuleAsyncOptions,
@@ -18,8 +19,12 @@ export type {
 export type { JsonObject, JsonValue } from "./contracts/json.types.js";
 export { AiModelError } from "./model/ai-model-error.js";
 export type { AiModelErrorCode } from "./model/ai-model-error.js";
-export { SdkModel } from "./model/sdk-model.js";
-export type { SdkModelOptions } from "./model/sdk-model.js";
+export { AiSdkModelAdapter } from "./model/ai-sdk-model-adapter.js";
+export type { AiSdkModelAdapterOptions } from "./model/ai-sdk-model-adapter.js";
+/** @deprecated Use AiSdkModelAdapter. */
+export { AiSdkModelAdapter as SdkModel } from "./model/ai-sdk-model-adapter.js";
+/** @deprecated Use AiSdkModelAdapterOptions. */
+export type { AiSdkModelAdapterOptions as SdkModelOptions } from "./model/ai-sdk-model-adapter.js";
 export type {
   AiMessage,
   AiModel,
@@ -36,10 +41,13 @@ export { AiTool } from "./decorators/ai-decorators.js";
 export { AiToolError, AiToolExecutor } from "./executor/ai-tool-executor.js";
 export { AiOrchestrator } from "./orchestrator/ai-orchestrator.js";
 export type { AiRunOptions, AiRunResult } from "./contracts/ai-run.js";
-export { AiAttachmentError } from "./orchestrator/ai-attachments.js";
+export { AiAttachmentError } from "./attachments/ai-attachment.js";
+export { AiAttachmentService } from "./services/ai-attachment.service.js";
 export type {
   AiAttachment,
   AiAttachmentModels,
+  AiAttachmentStorageAdapter,
+  AiAttachmentStorageOptions,
 } from "./contracts/ai-attachment.js";
 export {
   AiConversationError,

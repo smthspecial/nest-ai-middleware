@@ -81,12 +81,68 @@ async function fixture({
 const caller = { subjectId: "analyst", tenantId: "store-a" };
 const context = { caller, contextId: ContextIdFactory.create() };
 
+it("applies environment overrides to stored leases, transcript pages, previews and run events", async () => {
+  const env = jest.replaceProperty(process, "env", {
+    ...process.env,
+    NEST_AI_RUN_LEASE_MS: "50000",
+    NEST_AI_TRANSCRIPT_PAGE_SIZE: "1",
+    NEST_AI_CONVERSATION_PREVIEW_CHARS: "4",
+    NEST_AI_RUN_EVENT_PAGE_SIZE: "1",
+    NEST_AI_SQLITE_FILENAME: ":memory:",
+  });
+  try {
+    const adapter = new SqliteDatabaseAdapter();
+    try {
+      const begin = jest.spyOn(adapter, "beginConversation");
+      const { module, ai } = await fixture({
+        database: { adapter },
+        model: {
+          capabilities: { toolCalling: true },
+          async generate({ messages }) {
+            if (messages.at(-1)?.role === "tool")
+              return { kind: "final", message: "Done" };
+            return {
+              kind: "tool-calls",
+              toolCalls: [{ id: "tool-call", name: "report", arguments: {} }],
+            };
+          },
+        },
+      });
+      try {
+        const startedAt = Date.now();
+        const first = await ai.sendMessage("First question", context);
+        const leaseUntil = begin.mock.calls[0][0].leaseUntil;
+        expect(leaseUntil).toBeGreaterThanOrEqual(startedAt + 50_000);
+        expect(leaseUntil).toBeLessThanOrEqual(Date.now() + 50_000);
+        const sessionId = first.sessionId!;
+        await ai.sendMessage("Follow up", context, { sessionId });
+
+        const transcript = await ai.readConversation(sessionId, caller);
+        expect(transcript.turns).toHaveLength(1);
+        expect(transcript.nextAfter).toBe(1);
+        const page = await ai.readRun(first.runId, caller);
+        expect(page?.events).toHaveLength(1);
+        expect(page?.nextAfter).toBe(1);
+        expect(
+          (await ai.listConversations(caller)).conversations[0].preview,
+        ).toBe("Firs");
+      } finally {
+        await module.close();
+      }
+    } finally {
+      adapter.close();
+    }
+  } finally {
+    env.restore();
+  }
+});
+
 it("pages saved conversations across timestamp ties and excludes empty sessions", async () => {
   const adapter = new SqliteDatabaseAdapter(":memory:");
   const signal = AbortSignal.timeout(5000);
   const { module, ai } = await fixture({
     model: {
-      capabilities: { toolCalling: false },
+      capabilities: { toolCalling: true },
       async generate() {
         throw new Error("Unexpected model call");
       },
@@ -252,7 +308,7 @@ it("upgrades unversioned SQLite storage and resumes saved conversations and runs
       message: "It was 12.",
     }));
     const second = await fixture({
-      model: { capabilities: { toolCalling: false }, generate: followUp },
+      model: { capabilities: { toolCalling: true }, generate: followUp },
       filename: database.filename,
       logger,
     });
@@ -305,7 +361,7 @@ it("upgrades unversioned SQLite storage and resumes saved conversations and runs
         { sessionId },
       );
       expect(reply.sessionId).toBe(sessionId);
-      expect(followUp.mock.calls[0][0].messages).toEqual([
+      expect(followUp.mock.calls[0][0].messages.slice(1)).toEqual([
         { role: "user", content: "Show the weekly report." },
         { role: "assistant", content: "The weekly total was 12." },
         { role: "user", content: "What was the total?" },
@@ -480,7 +536,7 @@ it("uses one host-provided asynchronous adapter for history, run events, and aut
   }));
   const { ai, reader, module } = await fixture({
     model: {
-      capabilities: { toolCalling: false },
+      capabilities: { toolCalling: true },
       generate,
     },
     database: { adapter },
@@ -510,7 +566,7 @@ it("uses one host-provided asynchronous adapter for history, run events, and aut
     for (let index = 1; index <= 19; index++) {
       await ai.sendMessage(`Follow-up ${index}.`, context, runOptions);
     }
-    const prompt = generate.mock.calls.at(-1)?.[0].messages ?? [];
+    const prompt = generate.mock.calls.at(-1)?.[0].messages.slice(1) ?? [];
     expect(prompt[0]).toEqual({ role: "user", content: opening });
     expect(prompt[2]).toEqual({ role: "user", content: "Follow-up 1." });
     expect(prompt).toHaveLength(39);
@@ -594,7 +650,7 @@ it("blocks overlapping turns, releases failed runs, and loads all pages into the
   });
   const log = jest.fn<(event: AiLogEvent) => void>();
   const { ai, module } = await fixture({
-    model: { capabilities: { toolCalling: false }, generate },
+    model: { capabilities: { toolCalling: true }, generate },
     logger: { log },
   });
   try {
@@ -638,7 +694,7 @@ it("blocks overlapping turns, releases failed runs, and loads all pages into the
         (turn) => turn.user,
       ),
     ).toEqual(["Follow-up 49.", "Follow-up 50."]);
-    const messages = generate.mock.calls.at(-1)?.[0].messages ?? [];
+    const messages = generate.mock.calls.at(-1)?.[0].messages.slice(1) ?? [];
     expect(messages).toHaveLength(103);
     expect(messages[0]).toEqual({ role: "user", content: "Weekly report." });
     expect(messages.at(-3)).toEqual({ role: "user", content: "Follow-up 49." });

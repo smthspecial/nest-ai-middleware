@@ -106,7 +106,7 @@ export class AiToolRegistry implements OnApplicationBootstrap {
         }
         if (operation !== "get" && !this.options.execution.allowWrites) {
           throw new TypeError(
-            `AI tool ${service.name}.${key} requires execution.allowWrites.`,
+            `AI tool ${service.name}.${key} requires NEST_AI_ALLOW_WRITES=true.`,
           );
         }
         if (

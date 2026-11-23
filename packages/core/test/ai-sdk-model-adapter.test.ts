@@ -1,7 +1,7 @@
 import { describe, expect, it, jest } from "@jest/globals";
 import { APICallError } from "@ai-sdk/provider";
 import type { LanguageModelV3 } from "@ai-sdk/provider";
-import { SdkModel } from "../src/index.js";
+import { AiSdkModelAdapter, SdkModel } from "../src/index.js";
 
 function sdkV3(doGenerate: LanguageModelV3["doGenerate"]): LanguageModelV3 {
   return {
@@ -16,7 +16,53 @@ function sdkV3(doGenerate: LanguageModelV3["doGenerate"]): LanguageModelV3 {
   };
 }
 
-describe("SdkModel", () => {
+describe("AiSdkModelAdapter", () => {
+  it("preserves the former SdkModel export as an alias", () => {
+    expect(SdkModel).toBe(AiSdkModelAdapter);
+  });
+
+  it("uses environment defaults and lets explicit SDK options override them", async () => {
+    const env = jest.replaceProperty(process, "env", {
+      ...process.env,
+      NEST_AI_SDK_TOOL_CALLING: "false",
+      NEST_AI_SDK_MAX_OUTPUT_TOKENS: "42",
+      NEST_AI_SDK_INSTRUCTIONS: "Answer briefly.",
+      NEST_AI_SDK_PROVIDER_OPTIONS: '{"test":{"verbosity":"low"}}',
+    });
+    try {
+      const generate = jest
+        .fn<LanguageModelV3["doGenerate"]>()
+        .mockRejectedValue(new Error("Provider unavailable"));
+      const defaults = new AiSdkModelAdapter(sdkV3(generate));
+      const explicit = new AiSdkModelAdapter(sdkV3(generate), {
+        toolCalling: true,
+        instructions: "",
+        maxOutputTokens: 64,
+        providerOptions: {},
+      });
+      expect(defaults.capabilities.toolCalling).toBe(false);
+      expect(explicit.capabilities.toolCalling).toBe(true);
+      await expect(
+        defaults.generate({ messages: [], tools: [] }),
+      ).rejects.toMatchObject({ code: "MODEL_UNAVAILABLE" });
+      await expect(
+        explicit.generate({ messages: [], tools: [] }),
+      ).rejects.toMatchObject({ code: "MODEL_UNAVAILABLE" });
+      expect(generate.mock.calls[0][0]).toMatchObject({
+        prompt: [{ role: "system", content: "Answer briefly." }],
+        maxOutputTokens: 42,
+        providerOptions: { test: { verbosity: "low" } },
+      });
+      expect(generate.mock.calls[1][0]).toMatchObject({
+        prompt: [],
+        maxOutputTokens: 64,
+        providerOptions: {},
+      });
+    } finally {
+      env.restore();
+    }
+  });
+
   it("adapts V3 file inputs with host instructions, settings, and cancellation", async () => {
     const generate = jest
       .fn<LanguageModelV3["doGenerate"]>()
@@ -34,7 +80,7 @@ describe("SdkModel", () => {
         },
         warnings: [],
       });
-    const model = new SdkModel(sdkV3(generate), {
+    const model = new AiSdkModelAdapter(sdkV3(generate), {
       instructions: "Write short answers.",
       toolCalling: false,
       maxOutputTokens: 64,
@@ -87,7 +133,7 @@ describe("SdkModel", () => {
   });
 
   it("maps rate limits without exposing provider errors", async () => {
-    const model = new SdkModel(
+    const model = new AiSdkModelAdapter(
       sdkV3(async () => {
         throw new APICallError({
           message: "Provider details",

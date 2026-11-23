@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import { Module } from "@nestjs/common";
 import { DiscoveryModule } from "@nestjs/core";
+import { AiAttachmentService } from "./services/ai-attachment.service.js";
 import { AiChatService } from "./services/ai-chat.service.js";
 import { AiToolExecutor } from "./executor/ai-tool-executor.js";
 import { AiOrchestrator } from "./orchestrator/ai-orchestrator.js";
@@ -23,6 +24,7 @@ import {
 @Module({
   imports: [DiscoveryModule],
   providers: [
+    AiAttachmentService,
     AiChatService,
     AiDatabase,
     AiToolRegistry,
@@ -33,7 +35,13 @@ import {
     AiToolExecutor,
     AiOrchestrator,
   ],
-  exports: [AiChatService, AiToolExecutor, AiOrchestrator, AiRunReader],
+  exports: [
+    AiAttachmentService,
+    AiChatService,
+    AiToolExecutor,
+    AiOrchestrator,
+    AiRunReader,
+  ],
 })
 export class AiModule {
   static forRoot(options: AiModuleOptions): DynamicModule {

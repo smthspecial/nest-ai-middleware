@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
+import { AI_MODULE_OPTIONS } from "../config/validate-options.js";
+import type { ValidatedAiModuleOptions } from "../config/validate-options.js";
 import type { AiCaller } from "../contracts/ai-execution-context.js";
 import type { AiDatabaseAdapter } from "../contracts/ai-database.js";
 import { AiDatabase } from "../database/ai-database.js";
@@ -15,13 +17,13 @@ import type {
   AiStoredConversationTurn,
 } from "../contracts/ai-conversation.js";
 
-const runLeaseMs = 35_000;
-const transcriptPageSize = 50;
-const conversationPageSize = 20;
-
 @Injectable()
 export class AiConversationSessions {
-  constructor(private readonly database: AiDatabase) {}
+  constructor(
+    private readonly database: AiDatabase,
+    @Inject(AI_MODULE_OPTIONS)
+    private readonly options: ValidatedAiModuleOptions,
+  ) {}
 
   get enabled(): boolean {
     return this.database.adapter !== undefined;
@@ -44,7 +46,7 @@ export class AiConversationSessions {
           session,
           runId,
           create,
-          leaseUntil: Date.now() + runLeaseMs,
+          leaseUntil: Date.now() + this.options.limits.runLeaseMs,
         },
         signal,
       ),
@@ -70,6 +72,7 @@ export class AiConversationSessions {
     signal: AbortSignal,
   ) {
     const history: AiConversationTurn[] = [];
+    const { transcriptPageSize } = this.options.limits;
     let after = 0;
     for (;;) {
       const page = await this.listTurns(
@@ -97,7 +100,9 @@ export class AiConversationSessions {
   }
 
   async release(session: AiConversationSession, runId: string): Promise<void> {
-    const signal = AbortSignal.timeout(250);
+    const signal = AbortSignal.timeout(
+      this.options.limits.sessionReleaseTimeoutMs,
+    );
     try {
       await withSignal(signal, () =>
         this.requireStore().finishConversation(
@@ -114,12 +119,13 @@ export class AiConversationSessions {
     id: string,
     caller: AiCaller,
     after = 0,
-    signal = AbortSignal.timeout(5000),
+    signal = AbortSignal.timeout(this.options.limits.storeReadTimeoutMs),
   ): Promise<AiConversationPage> {
     if (!isAiSessionId(id) || !caller.subjectId.trim())
       throw new AiConversationError("SESSION_UNAVAILABLE");
     if (!Number.isSafeInteger(after) || after < 0)
       throw new TypeError("Invalid conversation cursor.");
+    const { transcriptPageSize } = this.options.limits;
     const rows = await this.listTurns(
       this.requireStore(),
       { id, caller },
@@ -142,13 +148,14 @@ export class AiConversationSessions {
   async list(
     caller: AiCaller,
     after?: string,
-    signal = AbortSignal.timeout(5000),
+    signal = AbortSignal.timeout(this.options.limits.storeReadTimeoutMs),
   ): Promise<AiConversationListPage> {
     if (!caller.subjectId.trim())
       throw new AiConversationError("SESSION_UNAVAILABLE");
     const store = this.requireStore();
     const list = store.listConversations;
     if (!list) throw new AiConversationError("SESSION_UNAVAILABLE");
+    const { conversationPageSize } = this.options.limits;
     const query: AiConversationListQuery = {
       limit: conversationPageSize + 1,
       ...(after === undefined ? {} : { before: this.parseListCursor(after) }),

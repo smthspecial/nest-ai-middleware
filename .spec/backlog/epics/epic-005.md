@@ -9,7 +9,7 @@ linkedIds: US-009,US-013
 
 # Optional adapters and production integrations
 
-The bundled `SdkModel` adapter and SQLite integration are available. PostgreSQL and MongoDB packages build and type-check.
+The bundled `AiSdkModelAdapter` and SQLite integration are available. PostgreSQL and MongoDB packages build and type-check.
 
 ## Remaining exit criteria
 

@@ -1,4 +1,6 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
+import { AI_MODULE_OPTIONS } from "../config/validate-options.js";
+import type { ValidatedAiModuleOptions } from "../config/validate-options.js";
 import type {
   AiDatabaseAdapter,
   AiRunEventDetails,
@@ -32,6 +34,7 @@ class RunRecord {
     private readonly adapter: AiDatabaseAdapter,
     private readonly runId: string,
     private readonly reportFailure: () => void,
+    private readonly timeoutMs: number,
   ) {}
 
   start(): Promise<boolean> {
@@ -78,7 +81,7 @@ class RunRecord {
   private async write(
     operation: (signal: AbortSignal) => void | Promise<void>,
   ): Promise<boolean> {
-    const signal = AbortSignal.timeout(100);
+    const signal = AbortSignal.timeout(this.timeoutMs);
     try {
       await withSignal(signal, () => operation(signal));
       return true;
@@ -94,7 +97,11 @@ class RunRecord {
 
 @Injectable()
 export class AiRunBookkeeping {
-  constructor(private readonly database: AiDatabase) {}
+  constructor(
+    private readonly database: AiDatabase,
+    @Inject(AI_MODULE_OPTIONS)
+    private readonly options: ValidatedAiModuleOptions,
+  ) {}
 
   async start(
     runId: string,
@@ -102,7 +109,12 @@ export class AiRunBookkeeping {
   ): Promise<RunRecord | undefined> {
     const adapter = this.database.adapter;
     if (!adapter) return;
-    const record = new RunRecord(adapter, runId, reportFailure);
+    const record = new RunRecord(
+      adapter,
+      runId,
+      reportFailure,
+      this.options.limits.bookkeepingTimeoutMs,
+    );
     if (await record.start()) return record;
   }
 }

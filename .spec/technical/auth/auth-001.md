@@ -33,7 +33,7 @@ linkedIds: FR-003,FR-005,FR-007,NFR-001,TP-001
 
 ## Deferred write approval and idempotency
 
-Read tools are enabled by default. Declared create and update tools require `execution.allowWrites: true`. The host owns confirmation and idempotency for those tools. The following requirements describe the proposed durable approval workflow.
+Read tools are enabled by default. Declared create and update tools require `NEST_AI_ALLOW_WRITES=true`. The host owns confirmation and idempotency for those tools. The following requirements describe the proposed durable approval workflow.
 
 1. Reuse the execution authorization check on a validated proposal. Store an immutable record with the opaque action ID, actor, tenant, conversation, registered tool, validated arguments, schema or application revision, expiration, and stable operation key. Present a host-generated summary of the action and its target.
 2. Accept approval or rejection through the authenticated HTTP route. Verify actor, tenant, expiration, and registration revision. Approval claims the action atomically, revalidates its saved arguments, and rechecks current permissions before calling the service. Rejection closes the action without dispatch. Unknown actions and actions owned by a different caller share a safe response.

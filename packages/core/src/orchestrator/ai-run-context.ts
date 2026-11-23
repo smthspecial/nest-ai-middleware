@@ -20,6 +20,9 @@ const rejectedCodes = new Set([
   "DENIED",
   "TOOL_UNAVAILABLE",
   "INVALID_ARGUMENTS",
+  "ATTACHMENT_NOT_FOUND",
+  "ATTACHMENT_NOT_CONFIGURED",
+  "ATTACHMENT_STORAGE_NOT_CONFIGURED",
 ]);
 const timeoutCodes = new Set(["MODEL_TIMEOUT", "TOOL_TIMEOUT"]);
 
@@ -53,13 +56,9 @@ export class AiRunContext {
   ): Promise<AiModelResponse> {
     const { abortSignal } = this.invocation;
     const startedAt = performance.now();
-    let response: AiModelResponse;
-
-    try {
-      response = await withSignal(abortSignal, () =>
-        model.generate({ ...request, abortSignal }),
-      );
-    } catch (error) {
+    const response = await withSignal(abortSignal, () =>
+      model.generate({ ...request, abortSignal }),
+    ).catch(async (error: unknown) => {
       const failure =
         error instanceof AiModelError || error instanceof AiSecurityError
           ? error
@@ -73,7 +72,7 @@ export class AiRunContext {
         errorCode: failure.code,
       });
       throw failure;
-    }
+    });
 
     await this.record?.append({
       kind: "model_call",

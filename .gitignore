@@ -5,8 +5,11 @@
 /*.tgz
 /data/*.sqlite
 /data/*.sqlite-*
+/assets/attachments/
 /.turbo/
 /packages/*/dist/
 /packages/*/.test-build/
 /packages/*/.turbo/
 /packages/*/node_modules/
+
+/release/

@@ -1,15 +1,22 @@
 import type { AiModuleOptions } from "../contracts/ai-module-options.js";
-import type { AiAttachmentModels } from "../contracts/ai-attachment.js";
+import type {
+  AiAttachmentModels,
+  AiAttachmentStorageOptions,
+} from "../contracts/ai-attachment.js";
 import type {
   AiDatabaseAdapter,
   AiDatabaseOptions,
 } from "../contracts/ai-database.js";
+import {
+  readAiBooleanEnv,
+  readAiEnv,
+  readAiIntegerEnv,
+} from "./environment.js";
+import { readRuntimeLimits } from "./runtime-limits.js";
+import type { AiRuntimeLimits } from "./runtime-limits.js";
 
 export const AI_MODULE_OPTIONS = Symbol("AI_MODULE_OPTIONS");
 
-const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
-// Node schedules a 1 ms timer when the delay exceeds the signed 32-bit range.
-const NODE_MAX_TIMER_DELAY_MS = 2_147_483_647;
 const databaseMethods = [
   "beginConversation",
   "finishConversation",
@@ -21,9 +28,9 @@ const databaseMethods = [
   "readRun",
 ] as const satisfies readonly (keyof AiDatabaseAdapter)[];
 
-export type ValidatedAiModuleOptions = Readonly<
-  Omit<AiModuleOptions, "execution" | "promptSecurity">
-> & {
+export type ValidatedAiModuleOptions = Readonly<AiModuleOptions> & {
+  readonly attachmentDirectory?: string;
+  readonly limits: AiRuntimeLimits;
   readonly execution: {
     readonly toolTimeoutMs: number;
     readonly allowWrites: boolean;
@@ -34,32 +41,12 @@ export type ValidatedAiModuleOptions = Readonly<
   };
 };
 
-function validatePromptSecurity(
-  options: AiModuleOptions["promptSecurity"] = true,
-): ValidatedAiModuleOptions["promptSecurity"] {
-  if (typeof options === "boolean") {
-    return Object.freeze({ input: options, output: options });
-  }
-
-  if (
-    !options ||
-    typeof options !== "object" ||
-    Array.isArray(options) ||
-    Object.keys(options).some((key) => key !== "input" && key !== "output")
-  ) {
-    throw new TypeError(
-      "AiModule promptSecurity must be a boolean or an object with input and output switches.",
-    );
-  }
-
-  const { input = true, output = true } = options;
-  if (typeof input !== "boolean" || typeof output !== "boolean") {
-    throw new TypeError(
-      "AiModule promptSecurity.input and output must be booleans.",
-    );
-  }
-
-  return Object.freeze({ input, output });
+function readPromptSecurity(): ValidatedAiModuleOptions["promptSecurity"] {
+  const enabled = readAiBooleanEnv("PROMPT_SECURITY") ?? true;
+  return Object.freeze({
+    input: readAiBooleanEnv("PROMPT_SECURITY_INPUT") ?? enabled,
+    output: readAiBooleanEnv("PROMPT_SECURITY_OUTPUT") ?? enabled,
+  });
 }
 
 function validateDatabase(options: AiDatabaseOptions): AiDatabaseOptions {
@@ -108,6 +95,42 @@ function validateAttachmentModels(
   return Object.freeze({ ...options });
 }
 
+function validateAttachmentStorage(
+  options: AiAttachmentStorageOptions,
+): AiAttachmentStorageOptions {
+  if (
+    !options ||
+    typeof options !== "object" ||
+    Array.isArray(options) ||
+    Object.keys(options).some((key) => key !== "adapter") ||
+    !options.adapter ||
+    (["create", "read", "update", "delete"] as const).some(
+      (method) => typeof options.adapter[method] !== "function",
+    )
+  ) {
+    throw new TypeError(
+      "Pass a custom attachmentStorage.adapter to AiModule. Configure local storage with NEST_AI_ATTACHMENT_STORAGE_ENABLED or NEST_AI_ATTACHMENT_STORAGE_DIRECTORY.",
+    );
+  }
+  return Object.freeze({ adapter: options.adapter });
+}
+
+function readAttachmentDirectory(): string | undefined {
+  const directory = readAiEnv("ATTACHMENT_STORAGE_DIRECTORY");
+  const enabled =
+    readAiBooleanEnv("ATTACHMENT_STORAGE_ENABLED") ?? directory !== undefined;
+  if (!enabled) return;
+  if (
+    directory !== undefined &&
+    (!directory.trim() || directory.includes("\0"))
+  ) {
+    throw new TypeError(
+      "NEST_AI_ATTACHMENT_STORAGE_DIRECTORY must be a nonempty path.",
+    );
+  }
+  return directory ?? "./assets/attachments";
+}
+
 export function validateOptions(
   options: AiModuleOptions,
 ): ValidatedAiModuleOptions {
@@ -115,20 +138,14 @@ export function validateOptions(
     throw new TypeError("AiModule options must be an object.");
   }
 
-  const {
-    model,
-    attachmentModels,
-    execution,
-    promptSecurity,
-    database,
-    logger,
-  } = options;
+  const { model, attachmentModels, attachmentStorage, database, logger } =
+    options;
   if (
     typeof model?.generate !== "function" ||
-    typeof model.capabilities?.toolCalling !== "boolean"
+    model.capabilities?.toolCalling !== true
   ) {
     throw new TypeError(
-      "AiModule model must implement generate() and declare capabilities.toolCalling as a boolean.",
+      "AiModule chat model must implement generate() and set capabilities.toolCalling to true.",
     );
   }
   if (
@@ -166,41 +183,35 @@ export function validateOptions(
     );
   }
 
-  if (
-    execution !== undefined &&
-    (execution === null ||
-      typeof execution !== "object" ||
-      Array.isArray(execution))
-  ) {
-    throw new TypeError("AiModule execution must be an object when supplied.");
-  }
-  const configuredTimeout = execution?.toolTimeoutMs;
-  const toolTimeoutMs =
-    configuredTimeout === undefined
-      ? DEFAULT_TOOL_TIMEOUT_MS
-      : configuredTimeout;
-  const allowWrites =
-    execution?.allowWrites === undefined ? false : execution.allowWrites;
-  if (typeof allowWrites !== "boolean")
-    throw new TypeError("AiModule execution.allowWrites must be a boolean.");
-  if (
-    !Number.isInteger(toolTimeoutMs) ||
-    toolTimeoutMs < 1 ||
-    toolTimeoutMs > NODE_MAX_TIMER_DELAY_MS
-  ) {
+  if ("promptSecurity" in options) {
     throw new TypeError(
-      `AiModule execution.toolTimeoutMs must be an integer from 1 to ${NODE_MAX_TIMER_DELAY_MS}.`,
+      "Configure prompt security with NEST_AI_PROMPT_SECURITY, NEST_AI_PROMPT_SECURITY_INPUT and NEST_AI_PROMPT_SECURITY_OUTPUT.",
     );
   }
+  if ("execution" in options) {
+    throw new TypeError(
+      "Configure tool execution with NEST_AI_TOOL_TIMEOUT_MS and NEST_AI_ALLOW_WRITES.",
+    );
+  }
+  const attachmentDirectory =
+    attachmentStorage === undefined ? readAttachmentDirectory() : undefined;
 
   return Object.freeze({
     model,
     ...(attachmentModels === undefined
       ? {}
       : { attachmentModels: validateAttachmentModels(attachmentModels) }),
-    promptSecurity: validatePromptSecurity(promptSecurity),
+    ...(attachmentStorage === undefined
+      ? {}
+      : { attachmentStorage: validateAttachmentStorage(attachmentStorage) }),
+    ...(attachmentDirectory === undefined ? {} : { attachmentDirectory }),
+    promptSecurity: readPromptSecurity(),
     ...(database !== undefined ? { database: validateDatabase(database) } : {}),
     ...(logger ? { logger } : {}),
-    execution: Object.freeze({ toolTimeoutMs, allowWrites }),
+    limits: readRuntimeLimits(),
+    execution: Object.freeze({
+      toolTimeoutMs: readAiIntegerEnv("TOOL_TIMEOUT_MS", 10_000),
+      allowWrites: readAiBooleanEnv("ALLOW_WRITES") ?? false,
+    }),
   });
 }

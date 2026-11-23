@@ -8,10 +8,11 @@ export async function writeRunLog(
   sessionId: string | undefined,
   caller: AiCaller,
   detail: AiLogDetail,
+  timeoutMs: number,
 ): Promise<void> {
   if (!logger) return;
   try {
-    await withSignal(AbortSignal.timeout(100), () =>
+    await withSignal(AbortSignal.timeout(timeoutMs), () =>
       logger.log({
         runId,
         ...(sessionId ? { sessionId } : {}),

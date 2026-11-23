@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { Inject, Injectable } from "@nestjs/common";
+import {
+  AiAttachmentError,
+  assertAttachmentId,
+} from "../attachments/ai-attachment.js";
 import { AI_MODULE_OPTIONS } from "../config/validate-options.js";
 import type { ValidatedAiModuleOptions } from "../config/validate-options.js";
 import { AiConversationSessions } from "../conversation/ai-conversation-sessions.js";
@@ -8,10 +12,15 @@ import type {
   AiConversationSession,
   AiConversationTurn,
 } from "../contracts/ai-conversation.js";
-import type { AiExecutionContext } from "../contracts/ai-execution-context.js";
+import type {
+  AiCaller,
+  AiExecutionContext,
+} from "../contracts/ai-execution-context.js";
 import type { AiLogDetail } from "../contracts/ai-logger.js";
+import type { AiMessage } from "../contracts/ai-model.js";
 import type { AiRunOptions, AiRunResult } from "../contracts/ai-run.js";
 import { AiToolError, AiToolExecutor } from "../executor/ai-tool-executor.js";
+import { withSignal } from "../executor/with-signal.js";
 import { AiRunBookkeeping } from "../logging/ai-run-bookkeeping.js";
 import { writeRunLog } from "../logging/run-logging.js";
 import { AiModelError } from "../model/ai-model-error.js";
@@ -19,17 +28,21 @@ import {
   AiPromptSecurity,
   AiSecurityError,
 } from "../security/prompt-security.js";
-import { assertAnswerText, generateAnswer } from "./ai-answer.js";
-import { buildUserMessage, prepareAttachments } from "./ai-attachments.js";
+import { AiAttachmentService } from "../services/ai-attachment.service.js";
+import { assertAnswerText, runModelLoop } from "./ai-answer.js";
+import {
+  addAttachment,
+  appendAttachmentNotes,
+  prepareAttachments,
+} from "./ai-attachments.js";
 import { AiRunContext } from "./ai-run-context.js";
-
-const RUN_TIMEOUT_MS = 30_000;
 
 function runFailure(error: unknown, signal: AbortSignal) {
   if (error instanceof AiSecurityError || error instanceof AiConversationError)
     return error;
   if (signal.aborted) return new AiModelError("MODEL_TIMEOUT");
-  if (error instanceof AiModelError) return error;
+  if (error instanceof AiModelError || error instanceof AiAttachmentError)
+    return error;
   return new AiModelError("MODEL_PROTOCOL_ERROR");
 }
 
@@ -49,6 +62,18 @@ function conversationMessages(
   return messages;
 }
 
+type OpenConversation = Awaited<ReturnType<AiConversationSessions["begin"]>>;
+
+interface PreparedRun {
+  caller: AiCaller;
+  runId: string;
+  invocation: AiRunContext["invocation"];
+  question: string;
+  history: ReturnType<typeof conversationMessages>;
+  attachments: ReturnType<typeof prepareAttachments>;
+  storedIds: string[];
+}
+
 @Injectable()
 export class AiOrchestrator {
   constructor(
@@ -58,6 +83,7 @@ export class AiOrchestrator {
     private readonly security: AiPromptSecurity,
     private readonly sessions: AiConversationSessions,
     private readonly bookkeeping: AiRunBookkeeping,
+    private readonly attachmentService: AiAttachmentService,
   ) {}
 
   async run(
@@ -65,6 +91,66 @@ export class AiOrchestrator {
     context: AiExecutionContext,
     runOptions: AiRunOptions = {},
   ): Promise<AiRunResult> {
+    const request = this.prepareRun(message, context, runOptions);
+    const { runId, caller, question, invocation } = request;
+    let conversation: OpenConversation | undefined;
+    let turnSaved = false;
+    const run = await this.createRunContext(
+      request,
+      context,
+      () => conversation?.session.id,
+    );
+
+    try {
+      run.screenInput(question);
+      if (this.sessions.enabled) {
+        conversation = await this.sessions.begin(
+          caller,
+          runOptions.sessionId,
+          runId,
+          invocation.abortSignal,
+        );
+        await run.record?.attachSession(conversation.session.id);
+      }
+
+      const history = this.prepareHistory(request.history, conversation, run);
+      await run.log({ stage: "input", message: question });
+      const user = await this.prepareUserMessage(request, run);
+      const reply = await this.answerRequest(
+        [...history, { role: "user", content: user }],
+        run,
+        runOptions,
+        {
+          runId,
+          ...(conversation ? { sessionId: conversation.session.id } : {}),
+        },
+      );
+
+      if (conversation) {
+        await this.saveTurn(
+          conversation.session,
+          user,
+          reply,
+          invocation.abortSignal,
+        );
+        turnSaved = true;
+      }
+      await this.recordSuccess(run, reply);
+      return reply;
+    } catch (error) {
+      throw await this.recordFailure(run, error);
+    } finally {
+      if (conversation && !turnSaved) {
+        await this.sessions.release(conversation.session, runId);
+      }
+    }
+  }
+
+  private prepareRun(
+    message: string,
+    context: AiExecutionContext,
+    runOptions: AiRunOptions,
+  ): PreparedRun {
     if (!context.caller.subjectId.trim()) throw new AiToolError("DENIED");
     if (typeof message !== "string") {
       throw new TypeError("Expected a text message.");
@@ -74,7 +160,13 @@ export class AiOrchestrator {
       runOptions.attachments === undefined ? [] : runOptions.attachments,
       this.options.attachmentModels,
     );
-    if (!message.trim() && !attachments.size) {
+    const { attachmentIds = [] } = runOptions;
+    if (!Array.isArray(attachmentIds))
+      throw new AiAttachmentError("INVALID_ATTACHMENT");
+    const storedIds = [...attachmentIds];
+    for (const id of storedIds) assertAttachmentId(id);
+
+    if (!message.trim() && !attachments.size && !storedIds.length) {
       throw new TypeError("Expected a message or an attachment.");
     }
     const question = message.trim() ? message : "Summarize the attached files.";
@@ -94,19 +186,37 @@ export class AiOrchestrator {
       ...(tenantId !== undefined ? { tenantId } : {}),
     };
     const runId = randomUUID();
-    const timeout = AbortSignal.timeout(RUN_TIMEOUT_MS);
+    const { limits } = this.options;
+    const timeout = AbortSignal.timeout(limits.runTimeoutMs);
     const signal = AbortSignal.any([
       timeout,
       ...(context.abortSignal ? [context.abortSignal] : []),
     ]);
-    const invocation = { ...context, abortSignal: signal };
+    return {
+      caller,
+      runId,
+      invocation: { ...context, abortSignal: signal },
+      question,
+      history: conversationMessages(runOptions.history ?? []),
+      attachments,
+      storedIds,
+    };
+  }
 
-    let history = conversationMessages(runOptions.history ?? []);
-    let session: AiConversationSession | undefined;
-    let leaseHeld = false;
-
+  private async createRunContext(
+    { runId, caller, invocation }: PreparedRun,
+    context: AiExecutionContext,
+    getSessionId: () => string | undefined,
+  ): Promise<AiRunContext> {
     const log = (detail: AiLogDetail) =>
-      writeRunLog(this.options.logger, runId, session?.id, caller, detail);
+      writeRunLog(
+        this.options.logger,
+        runId,
+        getSessionId(),
+        caller,
+        detail,
+        this.options.limits.logTimeoutMs,
+      );
     const record = await this.bookkeeping.start(runId, () => {
       void log({
         stage: "reasoning",
@@ -114,93 +224,94 @@ export class AiOrchestrator {
         code: "STORE_UNAVAILABLE",
       });
     });
-    const run = new AiRunContext(
-      context,
-      invocation,
-      this.security,
-      record,
-      log,
-    );
+    return new AiRunContext(context, invocation, this.security, record, log);
+  }
 
-    try {
-      run.screenInput(question);
+  private prepareHistory(
+    callerHistory: PreparedRun["history"],
+    conversation: OpenConversation | undefined,
+    run: AiRunContext,
+  ) {
+    const history = conversation
+      ? conversationMessages(conversation.history)
+      : callerHistory;
+    if (history.length) run.screenInput(history.map(({ content }) => content));
+    return history;
+  }
 
-      if (this.sessions.enabled) {
-        const stored = await this.sessions.begin(
-          caller,
-          runOptions.sessionId,
-          runId,
-          signal,
-        );
-        session = stored.session;
-        leaseHeld = true;
-        await record?.attachSession(session.id);
-        history = conversationMessages(stored.history);
-      }
-      if (history.length) {
-        run.screenInput(history.map((entry) => entry.content));
-      }
-      await log({ stage: "input", message: question });
-
-      const user = await buildUserMessage(question, attachments, run);
-      const answer = await generateAnswer({
-        messages: [...history, { role: "user", content: user }],
-        model: this.options.model,
-        executor: this.executor,
-        run,
-        runOptions,
-      });
-
-      run.screenOutput(answer.message);
-      const reply: AiRunResult = {
-        ...answer,
-        runId,
-        ...(session ? { sessionId: session.id } : {}),
-      };
-      const presented = runOptions.presentAnswer
-        ? runOptions.presentAnswer(Object.freeze(reply))
-        : reply.message;
-      assertAnswerText(presented);
-      if (presented !== reply.message) {
-        run.screenOutput(presented);
-      }
-
-      if (session) {
-        await this.sessions.finish(
-          session,
-          runId,
-          {
-            id: runId,
-            user,
-            assistant: presented,
-            tools: reply.tools,
-            toolIds: reply.toolIds,
-          },
-          signal,
-        );
-        leaseHeld = false;
-      }
-
-      await record?.finish("succeeded");
-      await log({
-        stage: "output",
-        message: presented,
-        toolIds: reply.toolIds,
-      });
-      return { ...reply, message: presented };
-    } catch (error) {
-      const failure = runFailure(error, signal);
-      await record?.finish(run.failureOutcome(failure.code), failure.code);
-      if (!(failure instanceof AiSecurityError)) {
-        await log({
-          stage: "reasoning",
-          event: "run_rejected",
-          code: failure.code,
-        });
-      }
-      throw failure;
-    } finally {
-      if (session && leaseHeld) await this.sessions.release(session, runId);
+  private async prepareUserMessage(
+    { caller, attachments, storedIds, question }: PreparedRun,
+    run: AiRunContext,
+  ): Promise<string> {
+    const signal = run.invocation.abortSignal;
+    for (const id of storedIds) {
+      const attachment = await withSignal(signal, () =>
+        this.attachmentService.read(caller, id, signal),
+      );
+      addAttachment(attachments, attachment, this.options.attachmentModels);
     }
+    return attachments.size
+      ? appendAttachmentNotes(question, attachments, run, this.options.limits)
+      : question;
+  }
+
+  private async answerRequest(
+    messages: AiMessage[],
+    run: AiRunContext,
+    runOptions: AiRunOptions,
+    identifiers: Pick<AiRunResult, "runId" | "sessionId">,
+  ): Promise<AiRunResult> {
+    const { model, limits } = this.options;
+    const answer = await runModelLoop({
+      messages,
+      model,
+      executor: this.executor,
+      run,
+      runOptions,
+      limits,
+    });
+    run.screenOutput(answer.message);
+    const reply: AiRunResult = { ...answer, ...identifiers };
+    const presented = runOptions.presentAnswer
+      ? runOptions.presentAnswer(Object.freeze(reply))
+      : reply.message;
+    assertAnswerText(presented, limits.maxAnswerBytes);
+    if (presented !== reply.message) run.screenOutput(presented);
+    return { ...reply, message: presented };
+  }
+
+  private saveTurn(
+    session: AiConversationSession,
+    user: string,
+    { runId, message, tools, toolIds }: AiRunResult,
+    signal: AbortSignal,
+  ): Promise<void> {
+    return this.sessions.finish(
+      session,
+      runId,
+      { id: runId, user, assistant: message, tools, toolIds },
+      signal,
+    );
+  }
+
+  private async recordSuccess(
+    run: AiRunContext,
+    { message, toolIds }: AiRunResult,
+  ) {
+    await run.record?.finish("succeeded");
+    await run.log({ stage: "output", message, toolIds });
+  }
+
+  private async recordFailure(run: AiRunContext, error: unknown) {
+    const failure = runFailure(error, run.invocation.abortSignal);
+    await run.record?.finish(run.failureOutcome(failure.code), failure.code);
+    if (!(failure instanceof AiSecurityError)) {
+      await run.log({
+        stage: "reasoning",
+        event: "run_rejected",
+        code: failure.code,
+      });
+    }
+    return failure;
   }
 }

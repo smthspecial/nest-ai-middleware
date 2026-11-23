@@ -1,3 +1,4 @@
+import { readAiEnv, readAiIntegerEnv } from "nestjs-ai-middleware";
 import type { ClientSession, Collection, MongoClient } from "mongodb";
 import type {
   AiCaller,
@@ -44,10 +45,7 @@ interface RunEventDocument {
   payload: AiRunEventRecord;
 }
 
-const eventPageSize = 50;
 const majority = { w: "majority" } as const;
-const bookkeepingOptions = { timeoutMS: 100, writeConcern: majority };
-const leaseOptions = { timeoutMS: 5000, writeConcern: majority };
 
 function sessionOwner({ id, caller }: AiConversationSession) {
   return {
@@ -58,17 +56,38 @@ function sessionOwner({ id, caller }: AiConversationSession) {
 }
 
 export class MongoDatabaseAdapter implements AiDatabaseAdapter {
+  private readonly eventPageSize = readAiIntegerEnv(
+    "RUN_EVENT_PAGE_SIZE",
+    50,
+    2_147_483_646,
+  );
+  private readonly previewChars = readAiIntegerEnv(
+    "CONVERSATION_PREVIEW_CHARS",
+    120,
+  );
+  private readonly bookkeepingOptions = {
+    timeoutMS: readAiIntegerEnv("MONGODB_BOOKKEEPING_TIMEOUT_MS", 100),
+    writeConcern: majority,
+  };
+  private readonly sessionOptions = {
+    timeoutMS: readAiIntegerEnv("MONGODB_SESSION_TIMEOUT_MS", 5000),
+    writeConcern: majority,
+  };
   private readonly sessions: Collection<SessionDocument>;
   private readonly turns: Collection<TurnDocument>;
   private readonly runs: Collection<RunDocument>;
   private readonly events: Collection<RunEventDocument>;
+  private readonly databaseName: string;
 
   constructor(
     private readonly client: MongoClient,
-    private readonly databaseName: string,
+    databaseName = readAiEnv("MONGODB_DATABASE_NAME"),
   ) {
     if (typeof databaseName !== "string" || !databaseName.trim())
-      throw new TypeError("A MongoDB database name is required.");
+      throw new TypeError(
+        "Pass a nonempty MongoDB database name or set NEST_AI_MONGODB_DATABASE_NAME.",
+      );
+    this.databaseName = databaseName;
     const db = client.db(databaseName, { readPreference: "primary" });
     this.sessions = db.collection("nest_ai_chat_sessions");
     this.turns = db.collection("nest_ai_chat_turns");
@@ -99,7 +118,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
     if (create) {
       await this.sessions.insertOne(
         { ...owner, turnCount: 0, leaseId: runId, leaseUntil },
-        leaseOptions,
+        this.sessionOptions,
       );
       return { status: "ready" } as const;
     }
@@ -109,7 +128,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
         $or: [{ leaseId: null }, { leaseUntil: { $lte: Date.now() } }],
       },
       { $set: { leaseId: runId, leaseUntil } },
-      leaseOptions,
+      this.sessionOptions,
     );
     if (claim.matchedCount) return { status: "ready" } as const;
     const exists = await this.sessions.findOne(owner, {
@@ -227,7 +246,11 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
               as: "firstTurn",
               pipeline: [
                 { $match: { position: 1 } },
-                { $project: { preview: { $substrCP: ["$user", 0, 120] } } },
+                {
+                  $project: {
+                    preview: { $substrCP: ["$user", 0, this.previewChars] },
+                  },
+                },
               ],
             },
           },
@@ -294,7 +317,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
     signal.throwIfAborted();
     await this.runs.insertOne(
       { _id: runId, sessionId: null, status: "running", startedAt },
-      bookkeepingOptions,
+      this.bookkeepingOptions,
     );
   }
 
@@ -307,7 +330,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
     await this.runs.updateOne(
       { _id: runId, status: "running" },
       { $set: { sessionId } },
-      bookkeepingOptions,
+      this.bookkeepingOptions,
     );
   }
 
@@ -326,7 +349,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
           : {}),
         payload: event,
       },
-      bookkeepingOptions,
+      this.bookkeepingOptions,
     );
   }
 
@@ -347,7 +370,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
             : {}),
         },
       },
-      bookkeepingOptions,
+      this.bookkeepingOptions,
     );
   }
 
@@ -377,9 +400,9 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
     const rows = await this.events
       .find({ runId, sequence: { $gt: after } }, { signal })
       .sort({ sequence: 1 })
-      .limit(eventPageSize + 1)
+      .limit(this.eventPageSize + 1)
       .toArray();
-    const events = rows.slice(0, eventPageSize).map((row) => row.payload);
+    const events = rows.slice(0, this.eventPageSize).map((row) => row.payload);
     return {
       runId,
       sessionId: run.sessionId,
@@ -389,7 +412,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
       ...(run.errorCode !== undefined ? { errorCode: run.errorCode } : {}),
       ...(output ? { output: output.assistant } : {}),
       events,
-      ...(rows.length > eventPageSize
+      ...(rows.length > this.eventPageSize
         ? { nextAfter: events[events.length - 1].sequence }
         : {}),
     };
@@ -400,15 +423,12 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
     work: (session: ClientSession) => Promise<T>,
   ): Promise<T> {
     return this.client.withSession((session) =>
-      session.withTransaction(
-        async () => {
-          signal.throwIfAborted();
-          const result = await work(session);
-          signal.throwIfAborted();
-          return result;
-        },
-        { timeoutMS: 5000, writeConcern: majority },
-      ),
+      session.withTransaction(async () => {
+        signal.throwIfAborted();
+        const result = await work(session);
+        signal.throwIfAborted();
+        return result;
+      }, this.sessionOptions),
     );
   }
 }

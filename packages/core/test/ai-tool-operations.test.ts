@@ -1,4 +1,4 @@
-import { expect, it } from "@jest/globals";
+import { expect, it, jest } from "@jest/globals";
 import {
   ForbiddenException,
   Injectable,
@@ -128,22 +128,22 @@ class InvalidDeleteModule {}
 class LegacyArgumentOrderModule {}
 
 const model: AiModel = {
-  capabilities: { toolCalling: false },
+  capabilities: { toolCalling: true },
   async generate() {
     return { kind: "final", message: "OK" };
   },
 };
 
 function createFixture(allowWrites: boolean, recordsModule = RecordsModule) {
+  const env = jest.replaceProperty(process, "env", {
+    ...process.env,
+    NEST_AI_ALLOW_WRITES: String(allowWrites),
+  });
   return Test.createTestingModule({
-    imports: [
-      recordsModule,
-      AiModule.forRoot({
-        model,
-        execution: { allowWrites },
-      }),
-    ],
-  }).compile();
+    imports: [recordsModule, AiModule.forRoot({ model })],
+  })
+    .compile()
+    .finally(() => env.restore());
 }
 
 it("uses service guards and business authorization for get, create, and update", async () => {
@@ -249,7 +249,7 @@ it("rejects writes without host opt-in and rejects delete even with opt-in", asy
   const withDelete = await createFixture(true, InvalidDeleteModule);
   try {
     await expect(readOnly.init()).rejects.toThrow(
-      /requires execution.allowWrites/,
+      /requires NEST_AI_ALLOW_WRITES=true/,
     );
     await expect(withDelete.init()).rejects.toThrow(
       /Unsupported AI tool operation/,

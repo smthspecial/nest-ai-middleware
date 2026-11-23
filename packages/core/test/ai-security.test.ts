@@ -8,16 +8,15 @@ import { of } from "rxjs";
 import {
   AiModule,
   AiOrchestrator,
+  AiSdkModelAdapter,
   AiSecurityError,
   AiTool,
   AiToolExecutor,
-  SdkModel,
 } from "../src/index.js";
 import type {
   AiExecutionContext,
   AiModel,
   AiModelResponse,
-  AiModuleOptions,
 } from "../src/index.js";
 
 interface GuardRequest {
@@ -82,19 +81,16 @@ class ReportService extends AuthenticatedService {
 @Module({ providers: [ReportService] })
 class ReportModule {}
 
-async function createFixture(
-  model: AiModel,
-  promptSecurity?: AiModuleOptions["promptSecurity"],
-) {
+async function createFixture(model: AiModel, settings: NodeJS.ProcessEnv = {}) {
+  const env = jest.replaceProperty(process, "env", {
+    ...process.env,
+    ...settings,
+  });
   const fixture = await Test.createTestingModule({
-    imports: [
-      ReportModule,
-      AiModule.forRoot({
-        model,
-        ...(promptSecurity === undefined ? {} : { promptSecurity }),
-      }),
-    ],
-  }).compile();
+    imports: [ReportModule, AiModule.forRoot({ model })],
+  })
+    .compile()
+    .finally(() => env.restore());
   await fixture.init();
   const request: GuardRequest = {
     authenticated: true,
@@ -118,40 +114,58 @@ async function createFixture(
 }
 
 const quietModel: AiModel = {
-  capabilities: { toolCalling: false },
+  capabilities: { toolCalling: true },
   async generate() {
     return { kind: "final", message: "Report ready." };
   },
 };
 
-it("passes all supplied history to the model", async () => {
-  const generate = jest.fn<AiModel["generate"]>(async () => ({
-    kind: "final",
-    message: "Report ready.",
-  }));
-  const { fixture, context, orchestrator } = await createFixture({
-    ...quietModel,
-    generate,
-  });
-  try {
-    const history = Array.from({ length: 8 }, (_, index) => ({
-      user: `Question ${index} ${"a".repeat(4096)}`,
-      assistant: `Answer ${index} ${"b".repeat(4096)}`,
+it.each([true, false])(
+  "passes response guidance, authorized tools, and all supplied history to the model (access: %s)",
+  async (permitted) => {
+    const generate = jest.fn<AiModel["generate"]>(async () => ({
+      kind: "final",
+      message: "Report ready.",
     }));
-    await expect(
-      orchestrator.run("Continue.", context, { history }),
-    ).resolves.toMatchObject({ message: "Report ready." });
-    expect(generate.mock.calls[0][0].messages).toEqual([
-      ...history.flatMap(({ user, assistant }) => [
-        { role: "user", content: user },
-        { role: "assistant", content: assistant },
-      ]),
-      { role: "user", content: "Continue." },
-    ]);
-  } finally {
-    await fixture.close();
-  }
-});
+    const { fixture, request, context, orchestrator } = await createFixture({
+      ...quietModel,
+      generate,
+    });
+    try {
+      request.permitted = permitted;
+      const history = Array.from({ length: 8 }, (_, index) => ({
+        user: `Question ${index} ${"a".repeat(4096)}`,
+        assistant: `Answer ${index} ${"b".repeat(4096)}`,
+      }));
+      await expect(
+        orchestrator.run("Continue.", context, { history }),
+      ).resolves.toMatchObject({
+        message: "Report ready.",
+        tools: [],
+        toolIds: [],
+      });
+      const { messages, tools } = generate.mock.calls[0][0];
+      const [guidance, ...conversation] = messages;
+      expect(guidance).toMatchObject({
+        role: "system",
+        content: expect.stringContaining("Answer directly"),
+      });
+      expect(tools).toEqual(
+        permitted ? [expect.objectContaining({ name: "report" })] : [],
+      );
+      expect(request.events).toEqual(["authenticate", "authorize"]);
+      expect(conversation).toEqual([
+        ...history.flatMap(({ user, assistant }) => [
+          { role: "user", content: user },
+          { role: "assistant", content: assistant },
+        ]),
+        { role: "user", content: "Continue." },
+      ]);
+    } finally {
+      await fixture.close();
+    }
+  },
+);
 
 it("uses inherited class guards and method guards in the original Nest request scope", async () => {
   const { fixture, request, context, executor } =
@@ -226,7 +240,7 @@ it("round-trips large tool arguments, results, and provider continuation through
       warnings: [],
     });
   const { fixture, context, orchestrator } = await createFixture(
-    new SdkModel({
+    new AiSdkModelAdapter({
       specificationVersion: "v3",
       provider: "test",
       modelId: "scripted",
@@ -283,7 +297,7 @@ it("disables prompt checks with one switch and still requires tool authorization
         return { kind: "final", message: answer };
       },
     },
-    false,
+    { NEST_AI_PROMPT_SECURITY: "false" },
   );
 
   try {
@@ -353,7 +367,7 @@ it("can disable input screening while leaving output screening enabled", async (
     });
   const { fixture, context, orchestrator } = await createFixture(
     { ...quietModel, generate },
-    { input: false },
+    { NEST_AI_PROMPT_SECURITY_INPUT: "false" },
   );
 
   try {
@@ -376,7 +390,7 @@ it("can disable output screening while leaving input screening enabled", async (
     .mockResolvedValue({ kind: "final", message: answer });
   const { fixture, context, orchestrator } = await createFixture(
     { ...quietModel, generate },
-    { output: false },
+    { NEST_AI_PROMPT_SECURITY_OUTPUT: "false" },
   );
 
   try {

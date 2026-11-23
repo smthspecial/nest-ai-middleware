@@ -26,10 +26,10 @@ export class AiToolError extends Error {
   }
 }
 
-export function snapshot(value: unknown): JsonValue {
+export function snapshot(value: unknown, maxDepth: number): JsonValue {
   const ancestors = new Set<object>();
   function copy(entry: unknown, depth: number): JsonValue {
-    if (depth > 24) throw new TypeError("JSON nesting limit exceeded");
+    if (depth > maxDepth) throw new TypeError("JSON nesting limit exceeded");
     if (
       entry === null ||
       typeof entry === "boolean" ||
@@ -67,13 +67,12 @@ export function snapshot(value: unknown): JsonValue {
   return copy(value, 0);
 }
 
-function validateToolInput(tool: RegisteredAiTool, input: unknown): JsonObject {
-  let args: JsonValue;
-  try {
-    args = snapshot(input);
-  } catch {
-    throw new AiToolError("INVALID_ARGUMENTS");
-  }
+function validateToolInput(
+  tool: RegisteredAiTool,
+  input: unknown,
+  maxDepth: number,
+): JsonObject {
+  const args = snapshotToolInput(input, maxDepth);
   if (
     !args ||
     typeof args !== "object" ||
@@ -83,6 +82,14 @@ function validateToolInput(tool: RegisteredAiTool, input: unknown): JsonObject {
     throw new AiToolError("INVALID_ARGUMENTS");
   }
   return args;
+}
+
+function snapshotToolInput(input: unknown, maxDepth: number): JsonValue {
+  try {
+    return snapshot(input, maxDepth);
+  } catch {
+    throw new AiToolError("INVALID_ARGUMENTS");
+  }
 }
 
 @Injectable()
@@ -116,7 +123,11 @@ export class AiToolExecutor {
     if (!tool) throw new AiToolError("TOOL_UNAVAILABLE");
     if (!context.caller.subjectId.trim()) throw new AiToolError("DENIED");
 
-    const args = validateToolInput(tool, input);
+    const args = validateToolInput(
+      tool,
+      input,
+      this.options.limits.maxJsonDepth,
+    );
     const timeout = AbortSignal.timeout(this.options.execution.toolTimeoutMs);
     const signal = AbortSignal.any([
       timeout,
@@ -186,6 +197,6 @@ export class AiToolExecutor {
     const result = await withSignal(signal, () =>
       tool.method.call(instance, args),
     );
-    return snapshot(result);
+    return snapshot(result, this.options.limits.maxJsonDepth);
   }
 }

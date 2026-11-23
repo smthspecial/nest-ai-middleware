@@ -12,4 +12,4 @@ dependsOn: TASK-009
 
 # Provide and verify the bundled AI SDK adapter
 
-The core exports `SdkModel` for Vercel AI SDK V3 and V4 language models. The host supplies the provider package and model. Tests cover files, tool round trips, usage, provider continuation, abort forwarding, and sanitized provider errors. [SDK adapter](../../../packages/core/README.md#use-a-vercel-ai-sdk-model).
+The core exports `AiSdkModelAdapter` for models implementing the Vercel AI SDK language-model specification V3 or V4. The host supplies the provider package and model. Tests cover files, tool round trips, usage, provider continuation, abort forwarding, and sanitized provider errors. [SDK adapter](../../../packages/core/README.md#use-a-vercel-ai-sdk-model).

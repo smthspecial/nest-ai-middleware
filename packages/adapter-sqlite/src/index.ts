@@ -1,3 +1,4 @@
+import { readAiEnv, readAiIntegerEnv } from "nestjs-ai-middleware";
 import { DatabaseSync } from "node:sqlite";
 import type {
   AiCaller,
@@ -51,8 +52,6 @@ type RunEventRow = {
     }
 );
 
-const pageSize = 50;
-
 function projectEvent(runId: string, row: RunEventRow): AiRunEventRecord {
   const common = {
     runId,
@@ -84,20 +83,36 @@ function projectEvent(runId: string, row: RunEventRow): AiRunEventRecord {
 }
 
 export class SqliteDatabaseAdapter implements AiDatabaseAdapter {
+  private readonly eventPageSize = readAiIntegerEnv(
+    "RUN_EVENT_PAGE_SIZE",
+    50,
+    2_147_483_646,
+  );
+  private readonly previewChars = readAiIntegerEnv(
+    "CONVERSATION_PREVIEW_CHARS",
+    120,
+  );
   private readonly db: DatabaseSync;
 
-  constructor(filename: string) {
+  constructor(filename = readAiEnv("SQLITE_FILENAME")) {
     if (
       typeof filename !== "string" ||
       !filename.trim() ||
       filename.includes("\0")
     ) {
-      throw new TypeError("A non-empty SQLite filename is required.");
+      throw new TypeError(
+        "Pass a nonempty SQLite filename or set NEST_AI_SQLITE_FILENAME.",
+      );
     }
-    this.db = new DatabaseSync(filename, { timeout: 30_000 });
+    const migrationTimeout = readAiIntegerEnv(
+      "SQLITE_MIGRATION_TIMEOUT_MS",
+      30_000,
+    );
+    const busyTimeout = readAiIntegerEnv("SQLITE_BUSY_TIMEOUT_MS", 100);
+    this.db = new DatabaseSync(filename, { timeout: migrationTimeout });
     try {
       this.transaction(() => applySqliteMigrations(this.db));
-      this.db.exec("PRAGMA busy_timeout = 100");
+      this.db.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
     } catch (error) {
       this.db.close();
       throw error;
@@ -243,7 +258,7 @@ export class SqliteDatabaseAdapter implements AiDatabaseAdapter {
       .prepare(
         `
       WITH owned AS (
-        SELECT s.id AS sessionId, substr(first_turn.user_text, 1, 120) AS preview,
+        SELECT s.id AS sessionId, substr(first_turn.user_text, 1, ?) AS preview,
                COALESCE(r.started_at, 0) AS updatedAt
         FROM ai_chat_sessions s
         JOIN ai_chat_turns first_turn ON first_turn.session_id = s.id AND first_turn.position = 1
@@ -257,6 +272,7 @@ export class SqliteDatabaseAdapter implements AiDatabaseAdapter {
     `,
       )
       .all(
+        this.previewChars,
         caller.subjectId,
         caller.tenantId ?? null,
         ...(before ? [before.updatedAt, before.sessionId] : []),
@@ -360,8 +376,8 @@ export class SqliteDatabaseAdapter implements AiDatabaseAdapter {
       FROM ai_run_events WHERE run_id = ? AND sequence > ? ORDER BY sequence LIMIT ?
     `,
       )
-      .all(runId, after, pageSize + 1) as unknown as RunEventRow[];
-    const page = rows.slice(0, pageSize);
+      .all(runId, after, this.eventPageSize + 1) as unknown as RunEventRow[];
+    const page = rows.slice(0, this.eventPageSize);
     return {
       runId,
       sessionId: row.session_id,
@@ -371,7 +387,7 @@ export class SqliteDatabaseAdapter implements AiDatabaseAdapter {
       ...(row.error_code !== null ? { errorCode: row.error_code } : {}),
       ...(row.output !== null ? { output: row.output } : {}),
       events: page.map((event) => projectEvent(runId, event)),
-      ...(rows.length > pageSize
+      ...(rows.length > this.eventPageSize
         ? { nextAfter: page[page.length - 1].sequence }
         : {}),
     };

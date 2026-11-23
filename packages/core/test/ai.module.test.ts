@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@jest/globals";
+import { describe, expect, it, jest } from "@jest/globals";
 import { Module } from "@nestjs/common";
 import { ContextIdFactory } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
@@ -8,7 +8,7 @@ import { AiChatService, AiModule } from "../src/index.js";
 import type { AiModel, AiModuleOptions } from "../src/index.js";
 
 const model: AiModel = {
-  capabilities: { toolCalling: false },
+  capabilities: { toolCalling: true },
   async generate() {
     return { kind: "final", message: "Offline reply" };
   },
@@ -16,14 +16,10 @@ const model: AiModel = {
 const options: AiModuleOptions = { model };
 
 const HOST_MODEL = Symbol("HOST_MODEL");
-const HOST_TOOL_TIMEOUT = Symbol("HOST_TOOL_TIMEOUT");
 
 @Module({
-  providers: [
-    { provide: HOST_MODEL, useValue: model },
-    { provide: HOST_TOOL_TIMEOUT, useValue: 250 },
-  ],
-  exports: [HOST_MODEL, HOST_TOOL_TIMEOUT],
+  providers: [{ provide: HOST_MODEL, useValue: model }],
+  exports: [HOST_MODEL],
 })
 class HostDependenciesModule {}
 
@@ -50,9 +46,9 @@ describe("AiModule", () => {
   it("awaits a factory with dependencies exported by a host module", async () => {
     const registeredModule = AiModule.forRootAsync({
       imports: [HostDependenciesModule],
-      inject: [HOST_MODEL, HOST_TOOL_TIMEOUT],
-      async useFactory(hostModel: AiModel, toolTimeoutMs: number) {
-        return { model: hostModel, execution: { toolTimeoutMs } };
+      inject: [HOST_MODEL],
+      async useFactory(hostModel: AiModel) {
+        return { model: hostModel };
       },
     });
     const fixture = await Test.createTestingModule({
@@ -65,7 +61,7 @@ describe("AiModule", () => {
         .get<ValidatedAiModuleOptions>(AI_MODULE_OPTIONS, { strict: true });
 
       expect(config.model).toBe(model);
-      expect(config.execution.toolTimeoutMs).toBe(250);
+      expect(config.model).toBe(model);
     } finally {
       await fixture.close();
     }
@@ -134,10 +130,14 @@ describe("AiModule", () => {
     [{ model: { capabilities: { toolCalling: true } } }, /generate\(\)/],
     [{ model: { ...model, capabilities: {} } }, /capabilities\.toolCalling/],
     [
+      { model: { ...model, capabilities: { toolCalling: false } } },
+      /set capabilities\.toolCalling to true/,
+    ],
+    [
       {
         model: {
           ...model,
-          capabilities: { toolCalling: false, structuredOutput: "yes" },
+          capabilities: { toolCalling: true, structuredOutput: "yes" },
         },
       },
       /structuredOutput/,
@@ -146,22 +146,13 @@ describe("AiModule", () => {
       { authorization: {} },
       /Move AiModule authorization checks into Nest service guards/,
     ],
-    [{ promptSecurity: "false" }, /promptSecurity must be a boolean/],
+    [{ promptSecurity: false }, /NEST_AI_PROMPT_SECURITY/],
+    [{ execution: { toolTimeoutMs: 250 } }, /NEST_AI_TOOL_TIMEOUT_MS/],
     [
-      { promptSecurity: { enabled: false } },
-      /promptSecurity must be a boolean/,
-    ],
-    [{ promptSecurity: null }, /promptSecurity must be a boolean/],
-    [
-      { promptSecurity: { input: "false" } },
-      /promptSecurity.input and output must be booleans/,
-    ],
-    [
-      { promptSecurity: { output: null } },
-      /promptSecurity.input and output must be booleans/,
+      { attachmentStorage: { directory: "/assets" } },
+      /NEST_AI_ATTACHMENT_STORAGE_DIRECTORY/,
     ],
     [{ services: [] }, /before removing the AiModule services option/],
-    [{ execution: null }, /execution must be an object/],
     [{ database: { filename: ":memory:" } }, /database\.adapter/],
     [{ database: { adapter: {} } }, /implementing AiDatabaseAdapter/],
     [{ database: { filename: ":memory:", adapter: {} } }, /database\.adapter/],
@@ -171,11 +162,6 @@ describe("AiModule", () => {
       /Resumed conversations now use the full saved history/,
     ],
     [{ attachmentModels: { image: model } }, /full lowercase MIME types/],
-    [{ execution: { toolTimeoutMs: 0 } }, /execution\.toolTimeoutMs/],
-    [
-      { execution: { toolTimeoutMs: 2_147_483_648 } },
-      /execution\.toolTimeoutMs/,
-    ],
   ])(
     "rejects invalid configuration %o during bootstrap",
     async (overrides, error) => {
@@ -188,13 +174,78 @@ describe("AiModule", () => {
     },
   );
 
-  it("validates the resolved async configuration during bootstrap", async () => {
-    const registeredModule = AiModule.forRootAsync({
-      useFactory: () => ({ ...options, execution: { toolTimeoutMs: 1.5 } }),
+  it("reads environment settings at bootstrap", async () => {
+    const env = jest.replaceProperty(process, "env", {
+      ...process.env,
+      NEST_AI_RUN_TIMEOUT_MS: "45000",
+      NEST_AI_TOOL_TIMEOUT_MS: "420",
+      NEST_AI_MAX_ANSWER_BYTES: "5",
+      NEST_AI_PROMPT_SECURITY: "false",
+      NEST_AI_PROMPT_SECURITY_OUTPUT: "true",
+      NEST_AI_ALLOW_WRITES: "true",
     });
-
-    await expect(
-      Test.createTestingModule({ imports: [registeredModule] }).compile(),
-    ).rejects.toThrow(/execution\.toolTimeoutMs/);
+    const registered = AiModule.forRootAsync({ useFactory: () => options });
+    try {
+      const fixture = await Test.createTestingModule({
+        imports: [registered],
+      }).compile();
+      try {
+        const config = fixture
+          .select(registered)
+          .get<ValidatedAiModuleOptions>(AI_MODULE_OPTIONS, { strict: true });
+        expect(config.execution).toEqual({
+          toolTimeoutMs: 420,
+          allowWrites: true,
+        });
+        expect(config.promptSecurity).toEqual({ input: false, output: true });
+        expect(config.limits.runLeaseMs).toBe(50_000);
+        await expect(
+          fixture.get(AiChatService).sendMessage("Hello", {
+            caller: { subjectId: "reader" },
+            contextId: ContextIdFactory.create(),
+          }),
+        ).rejects.toMatchObject({ code: "MODEL_PROTOCOL_ERROR" });
+      } finally {
+        await fixture.close();
+      }
+    } finally {
+      env.restore();
+    }
   });
+
+  it.each([
+    [{ NEST_AI_RUN_LEASE_MS: "30000" }, /RUN_LEASE_MS must exceed/],
+    [{ NEST_AI_RUN_TIMEOUT_MS: "2.5" }, /RUN_TIMEOUT_MS must be an integer/],
+    [{ NEST_AI_TOOL_TIMEOUT_MS: "" }, /TOOL_TIMEOUT_MS must be an integer/],
+    [
+      { NEST_AI_TOOL_TIMEOUT_MS: "2147483648" },
+      /TOOL_TIMEOUT_MS must be an integer/,
+    ],
+    [
+      { NEST_AI_PROMPT_SECURITY_INPUT: "off" },
+      /PROMPT_SECURITY_INPUT must be true or false/,
+    ],
+    [{ NEST_AI_ALLOW_WRITES: "1" }, /ALLOW_WRITES must be true or false/],
+    [
+      { NEST_AI_ATTACHMENT_STORAGE_DIRECTORY: " " },
+      /ATTACHMENT_STORAGE_DIRECTORY must be a nonempty path/,
+    ],
+  ])(
+    "rejects malformed or inconsistent environment settings %o",
+    async (settings, error) => {
+      const env = jest.replaceProperty(process, "env", {
+        ...process.env,
+        ...settings,
+      });
+      try {
+        await expect(
+          Test.createTestingModule({
+            imports: [AiModule.forRoot(options)],
+          }).compile(),
+        ).rejects.toThrow(error);
+      } finally {
+        env.restore();
+      }
+    },
+  );
 });

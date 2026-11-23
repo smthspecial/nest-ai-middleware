@@ -10,6 +10,11 @@ import type {
   LanguageModelV4TextPart,
   SharedV4ProviderOptions,
 } from "@ai-sdk/provider";
+import {
+  readAiBooleanEnv,
+  readAiEnv,
+  readAiIntegerEnv,
+} from "../config/environment.js";
 import type {
   AiMessage,
   AiModel,
@@ -21,7 +26,7 @@ import type {
 import type { AiAttachment } from "../contracts/ai-attachment.js";
 import { AiModelError } from "./ai-model-error.js";
 
-export interface SdkModelOptions {
+export interface AiSdkModelAdapterOptions {
   readonly instructions?: string;
   readonly toolCalling?: boolean;
   readonly maxOutputTokens?: number;
@@ -131,93 +136,68 @@ function appendFiles<Data>(
   ];
 }
 
-export class SdkModel implements AiModel {
+function readProviderOptions(): SharedV4ProviderOptions | undefined {
+  const raw = readAiEnv("SDK_PROVIDER_OPTIONS");
+  if (raw === undefined) return;
+  try {
+    const options = JSON.parse(raw);
+    if (
+      options &&
+      typeof options === "object" &&
+      !Array.isArray(options) &&
+      Object.values(options).every(
+        (value) => value && typeof value === "object" && !Array.isArray(value),
+      )
+    ) {
+      return options as SharedV4ProviderOptions;
+    }
+  } catch {
+    // Report the setting name without exposing its contents.
+  }
+  throw new TypeError(
+    "NEST_AI_SDK_PROVIDER_OPTIONS must be a JSON object of provider option objects.",
+  );
+}
+
+export class AiSdkModelAdapter implements AiModel {
+  private readonly maxOutputTokens: number;
+  private readonly instructions: string | undefined;
+  private readonly providerOptions: SharedV4ProviderOptions | undefined;
   readonly capabilities: { readonly toolCalling: boolean };
 
   constructor(
-    private readonly model: LanguageModelV3 | LanguageModelV4,
-    private readonly options: SdkModelOptions = {},
+    private readonly languageModel: LanguageModelV3 | LanguageModelV4,
+    options: AiSdkModelAdapterOptions = {},
   ) {
     if (
-      !model ||
-      !["v3", "v4"].includes(model.specificationVersion) ||
-      typeof model.doGenerate !== "function"
+      !languageModel ||
+      !["v3", "v4"].includes(languageModel.specificationVersion) ||
+      typeof languageModel.doGenerate !== "function"
     ) {
       throw new TypeError(
-        "SdkModel requires a V3 or V4 AI SDK language model.",
+        "AiSdkModelAdapter requires a language model that implements AI SDK provider specification V3 or V4.",
       );
     }
+    this.maxOutputTokens =
+      options.maxOutputTokens ??
+      readAiIntegerEnv("SDK_MAX_OUTPUT_TOKENS", 1024);
+    this.instructions = options.instructions ?? readAiEnv("SDK_INSTRUCTIONS");
+    this.providerOptions = options.providerOptions ?? readProviderOptions();
     this.capabilities = Object.freeze({
-      toolCalling: options.toolCalling ?? true,
+      toolCalling:
+        options.toolCalling ?? readAiBooleanEnv("SDK_TOOL_CALLING") ?? true,
     });
   }
 
-  async generate({
-    messages,
-    tools,
-    attachments = [],
-    abortSignal,
-    responseSchema,
-  }: AiModelRequest): Promise<AiModelResponse> {
-    if (responseSchema || (!this.capabilities.toolCalling && tools.length)) {
+  async generate(request: AiModelRequest): Promise<AiModelResponse> {
+    if (
+      request.responseSchema ||
+      (!this.capabilities.toolCalling && request.tools.length)
+    ) {
       throw new AiModelError("UNSUPPORTED_MODEL_CAPABILITY");
     }
 
-    const prompt = [
-      ...(this.options.instructions
-        ? [{ role: "system" as const, content: this.options.instructions }]
-        : []),
-      ...messages.map(toProviderMessage),
-    ];
-    let response: Awaited<
-      ReturnType<(LanguageModelV3 | LanguageModelV4)["doGenerate"]>
-    >;
-    try {
-      abortSignal?.throwIfAborted();
-      const options = {
-        maxOutputTokens: this.options.maxOutputTokens ?? 1024,
-        ...(this.options.providerOptions
-          ? { providerOptions: this.options.providerOptions }
-          : {}),
-        ...(abortSignal ? { abortSignal } : {}),
-        ...(tools.length
-          ? {
-              tools: tools.map((tool) => ({
-                type: "function" as const,
-                name: tool.name,
-                description: toolDescription(tool),
-                inputSchema: tool.inputSchema,
-              })),
-            }
-          : {}),
-      };
-      response =
-        this.model.specificationVersion === "v3"
-          ? await this.model.doGenerate({
-              ...options,
-              prompt: appendFiles(prompt, attachments, (data) => data),
-            })
-          : await this.model.doGenerate({
-              ...options,
-              prompt: appendFiles(prompt, attachments, (data) => ({
-                type: "data" as const,
-                data,
-              })),
-            });
-      abortSignal?.throwIfAborted();
-    } catch (error) {
-      if (abortSignal?.aborted) throw new AiModelError("MODEL_TIMEOUT");
-      if (error instanceof AiModelError) throw error;
-      if (APICallError.isInstance(error) && error.statusCode === 429)
-        throw new AiModelError("MODEL_RATE_LIMITED");
-      if (
-        InvalidResponseDataError.isInstance(error) ||
-        JSONParseError.isInstance(error)
-      )
-        throw new AiModelError("MODEL_PROTOCOL_ERROR");
-      throw new AiModelError("MODEL_UNAVAILABLE");
-    }
-
+    const response = await this.callProvider(request);
     if (
       ["length", "content-filter", "error", "interrupted"].includes(
         response.finishReason.unified,
@@ -290,5 +270,65 @@ export class SdkModel implements AiModel {
     if (!text.length || response.finishReason.unified === "tool-calls")
       throw new AiModelError("MODEL_PROTOCOL_ERROR");
     return { kind: "final", message, ...metadata };
+  }
+
+  private async callProvider({
+    messages,
+    tools,
+    attachments = [],
+    abortSignal,
+  }: AiModelRequest) {
+    const prompt = [
+      ...(this.instructions
+        ? [{ role: "system" as const, content: this.instructions }]
+        : []),
+      ...messages.map(toProviderMessage),
+    ];
+    try {
+      abortSignal?.throwIfAborted();
+      const options = {
+        maxOutputTokens: this.maxOutputTokens,
+        ...(this.providerOptions
+          ? { providerOptions: this.providerOptions }
+          : {}),
+        ...(abortSignal ? { abortSignal } : {}),
+        ...(tools.length
+          ? {
+              tools: tools.map((tool) => ({
+                type: "function" as const,
+                name: tool.name,
+                description: toolDescription(tool),
+                inputSchema: tool.inputSchema,
+              })),
+            }
+          : {}),
+      };
+      const response =
+        this.languageModel.specificationVersion === "v3"
+          ? await this.languageModel.doGenerate({
+              ...options,
+              prompt: appendFiles(prompt, attachments, (data) => data),
+            })
+          : await this.languageModel.doGenerate({
+              ...options,
+              prompt: appendFiles(prompt, attachments, (data) => ({
+                type: "data" as const,
+                data,
+              })),
+            });
+      abortSignal?.throwIfAborted();
+      return response;
+    } catch (error) {
+      if (abortSignal?.aborted) throw new AiModelError("MODEL_TIMEOUT");
+      if (error instanceof AiModelError) throw error;
+      if (APICallError.isInstance(error) && error.statusCode === 429)
+        throw new AiModelError("MODEL_RATE_LIMITED");
+      if (
+        InvalidResponseDataError.isInstance(error) ||
+        JSONParseError.isInstance(error)
+      )
+        throw new AiModelError("MODEL_PROTOCOL_ERROR");
+      throw new AiModelError("MODEL_UNAVAILABLE");
+    }
   }
 }

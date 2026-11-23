@@ -4,12 +4,14 @@ type: arch
 title: "Public TypeScript API and model protocol"
 status: draft
 created: 2026-11-18
-linkedIds: FR-001,FR-002,FR-003,FR-004,FR-005,FR-006,FR-007
+linkedIds: ARCH-003,FR-001,FR-002,FR-003,FR-004,FR-005,FR-006,FR-007
 ---
 
 # Public TypeScript API and model protocol
 
 The signatures and examples describe the current library API. The host owns its HTTP contract and calls the library from trusted application code.
+
+The [data-flow diagrams](arch-003.md) show how the middleware handles calls to this API.
 
 ## NestJS integration
 
@@ -33,11 +35,9 @@ The host imports the module that owns `OrdersService` into its Nest application.
 export interface AiModuleOptions {
   model: AiModel;
   attachmentModels?: AiAttachmentModels;
-  promptSecurity?:
-    boolean | { readonly input?: boolean; readonly output?: boolean };
+  attachmentStorage?: AiAttachmentStorageOptions;
   database?: AiDatabaseOptions;
   logger?: AiLogger;
-  execution?: { toolTimeoutMs?: number; allowWrites?: boolean };
 }
 
 export interface AiCaller {
@@ -94,7 +94,7 @@ Use strict validation without coercion or silent property removal. The executor 
 
 ## Model adapter
 
-Core exports `SdkModel`, which wraps an initialized Vercel AI SDK V3 or V4 language model as an `AiModel`. The host supplies its choice of provider package, model ID, and credentials. Configure instructions, provider options, the output token budget, and tool-calling capability on the wrapper. The orchestrator retains control of tool discovery and execution. Hosts can also implement `AiModel` directly. [SDK integration example](../../../packages/core/README.md#use-a-vercel-ai-sdk-model)
+Core exports `AiSdkModelAdapter`. The host installs a provider package, configures its credentials, and uses the model ID to create a language model. The adapter accepts objects implementing `LanguageModelV3` or `LanguageModelV4` and exposes `AiModel.generate()`. Configure instructions, provider options, the output token budget, and tool-calling capability on the adapter. The orchestrator controls tool discovery and execution. Hosts can also implement `AiModel` directly. [SDK integration example](../../../packages/core/README.md#use-a-vercel-ai-sdk-model)
 
 ```ts
 export type JsonValue =
@@ -176,7 +176,7 @@ export declare class AiModelError extends Error {
 
 The adapter maps its SDK's messages, usage, errors, and argument encoding to these types. If the SDK emits JSON strings for arguments, the adapter parses them once. Core validates the complete batch and requires each call to have JSON object arguments and a unique ID within the run. Schema violations for otherwise well-formed calls become tool result errors. The orchestrator invokes tools sequentially and associates each call with its result in the model messages. The adapter passes abort signals to the SDK where supported. It can throw `AiModelError` for known failure categories. Core maps other adapter exceptions to `MODEL_UNAVAILABLE` and discards raw exception details from client responses. Provider credentials and SDK types stay inside the adapter boundary.
 
-Set `capabilities.toolCalling` to enable discovery. The optional `continuation` carries JSON data back to the adapter during a run. SDK adapters can use it for provider metadata required after a tool call. The orchestrator keeps it out of persisted conversations, logs, and responses. The chat loop consumes the final text field. The model contract reserves optional structured-output fields for future use, and the bundled `SdkModel` supports text and tool calls. The host can render application-specific data from tool callbacks. Streaming is planned separately.
+The chat model must declare `capabilities.toolCalling: true`. Each chat run discovers the tools eligible for the caller, and the model can choose to return a final answer. The optional `continuation` carries JSON data back to the adapter during a run. SDK adapters can use it for provider metadata required after a tool call. The orchestrator keeps it out of persisted conversations, logs, and responses. The chat loop consumes the final text field. The model contract reserves optional structured-output fields for future use, and `AiSdkModelAdapter` supports text and tool calls. The host can render application-specific data from tool callbacks. Streaming is planned separately.
 
 The host selects accepted file types, validates upload contents, and maps each supported MIME type to a model through `attachmentModels`. The host applies any message and upload limits. Resumed chats replay all turns from the verified session. The orchestrator sends files to the corresponding attachment models with an empty tool list. When input screening is enabled, the orchestrator checks extracted text before using it as chat context. With persistence enabled, the notes become part of the saved user turn. [File inputs](../../../packages/core/README.md#process-images-and-pdfs)
 
@@ -188,7 +188,7 @@ Service and method guards run before a tool definition goes to the model and bef
 
 The run returns `message`, `runId`, `tools`, and `toolIds`, plus `sessionId` when storage is enabled. The host maps typed failures to its HTTP error contract and propagates client cancellation through the run's abort signal. The host may format application-specific blocks such as charts through `onToolResult`, or replace the answer text through `presentAnswer`. The returned and stored assistant text uses the same value.
 
-Prompt screening defaults to `{ input: true, output: true }`. The host can toggle each check independently. Input checks cover incoming messages, history, attachment notes, and tool results. Output checks cover model-generated tool requests and final answer text. A rejected check aborts the run with a generic HTTP 500 in Nest. Storage can record `SECURITY_REJECTED` for backend inspection, and middleware logs omit the rejection event. [Core integration guide](../../../packages/core/README.md#access-and-prompt-security)
+Prompt screening defaults to `{ input: true, output: true }`. The host can toggle each check independently through `NEST_AI_PROMPT_SECURITY_INPUT` and `NEST_AI_PROMPT_SECURITY_OUTPUT`. Input checks cover incoming messages, history, attachment notes, and tool results. Output checks cover model-generated tool requests and final answer text. A rejected check aborts the run with a generic HTTP 500 in Nest. Storage can record `SECURITY_REJECTED` for backend inspection, and middleware logs omit the rejection event. [Core integration guide](../../../packages/core/README.md#access-and-prompt-security)
 
 ## Bookkeeping and persistence
 

@@ -12,6 +12,8 @@ export interface AiRunResult {
 
 export interface AiRunOptions {
   readonly attachments?: readonly AiAttachment[];
+  /** IDs returned by AiAttachmentService.create for this caller. */
+  readonly attachmentIds?: readonly string[];
   readonly history?: readonly AiConversationTurn[];
   readonly sessionId?: string;
   /** Lets the calling backend use a screened tool result while building this run's response. */
