@@ -8,7 +8,6 @@ import { AiChatService, AiModule } from "../src/index.js";
 import type { AiModel, AiModuleOptions } from "../src/index.js";
 
 const model: AiModel = {
-  capabilities: { toolCalling: true },
   async generate() {
     return { kind: "final", message: "Offline reply" };
   },
@@ -45,11 +44,8 @@ describe("AiModule", () => {
     const fixture = await Test.createTestingModule({
       imports: [
         AiModule.forRoot({
-          model: { capabilities: { toolCalling: true }, generate: chatModel },
-          answerEvaluator: {
-            capabilities: { toolCalling: false },
-            generate: review,
-          },
+          model: { generate: chatModel },
+          answerEvaluator: { generate: review },
         }),
       ],
     }).compile();
@@ -130,7 +126,6 @@ describe("AiModule", () => {
     }));
     files[0].data = Buffer.alloc(4 * 1024 * 1024 + 1);
     const extractor: AiModel = {
-      capabilities: { toolCalling: false },
       async generate({ attachments, tools }) {
         extractionCalls++;
         expect(tools).toEqual([]);
@@ -181,20 +176,11 @@ describe("AiModule", () => {
   });
 
   it.each([
-    [{ model: { capabilities: { toolCalling: true } } }, /generate\(\)/],
-    [{ model: { ...model, capabilities: {} } }, /capabilities\.toolCalling/],
+    [{ model: {} }, /chat model must implement generate\(\)/],
+    [{ answerEvaluator: {} }, /answerEvaluator must implement generate\(\)/],
     [
-      { model: { ...model, capabilities: { toolCalling: false } } },
-      /set capabilities\.toolCalling to true/,
-    ],
-    [
-      {
-        model: {
-          ...model,
-          capabilities: { toolCalling: true, structuredOutput: "yes" },
-        },
-      },
-      /structuredOutput/,
+      { attachmentModels: { "text/plain": {} } },
+      /attachment model must implement generate\(\)/,
     ],
     [
       { authorization: {} },

@@ -128,7 +128,6 @@ class InvalidDeleteModule {}
 class LegacyArgumentOrderModule {}
 
 const model: AiModel = {
-  capabilities: { toolCalling: true },
   async generate() {
     return { kind: "final", message: "OK" };
   },

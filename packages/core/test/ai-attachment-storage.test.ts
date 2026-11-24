@@ -25,7 +25,6 @@ const attachment = {
   data: Buffer.from("Revenue was 120 dollars.\n"),
 };
 const model: AiModel = {
-  capabilities: { toolCalling: true },
   async generate() {
     return { kind: "final", message: "Offline reply" };
   },
@@ -65,12 +64,10 @@ it("persists uploads across Nest instances and resolves attachments only for the
   const options: AiModuleOptions = {
     attachmentModels: {
       "text/plain": {
-        capabilities: { toolCalling: false },
         generate: extraction,
       },
     },
     model: {
-      capabilities: { toolCalling: true },
       async generate({ messages }) {
         const last = messages.at(-1);
         if (last?.role === "tool") {

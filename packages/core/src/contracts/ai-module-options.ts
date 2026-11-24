@@ -8,7 +8,7 @@ import type {
 } from "./ai-attachment.js";
 
 export interface AiModuleOptions {
-  /** The chat model must declare capabilities.toolCalling: true. */
+  /** The chat model receives the tools available for the run. */
   model: AiModel;
   /** Reviews proposed answers and gives feedback for one revision when needed. */
   answerEvaluator?: AiModel;

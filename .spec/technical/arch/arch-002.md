@@ -138,13 +138,12 @@ export interface AiModelRequest {
   readonly tools: readonly AiToolDefinition[];
   readonly attachments?: readonly AiAttachment[];
   readonly abortSignal?: AbortSignal;
-  readonly responseSchema?: JsonObject;
 }
 
 type AiUsage = { inputTokens?: number; outputTokens?: number };
 
 export type AiModelResponse = (
-  | { kind: "final"; message: string; structuredOutput?: unknown }
+  | { kind: "final"; message: string }
   | {
       kind: "tool-calls";
       message?: string;
@@ -154,10 +153,6 @@ export type AiModelResponse = (
 ) & { usage?: AiUsage };
 
 export interface AiModel {
-  readonly capabilities: {
-    readonly toolCalling: boolean;
-    readonly structuredOutput?: boolean;
-  };
   generate(request: AiModelRequest): Promise<AiModelResponse>;
 }
 
@@ -165,8 +160,7 @@ export type AiModelErrorCode =
   | "MODEL_TIMEOUT"
   | "MODEL_RATE_LIMITED"
   | "MODEL_UNAVAILABLE"
-  | "MODEL_PROTOCOL_ERROR"
-  | "UNSUPPORTED_MODEL_CAPABILITY";
+  | "MODEL_PROTOCOL_ERROR";
 
 export declare class AiModelError extends Error {
   constructor(code: AiModelErrorCode);
@@ -176,7 +170,7 @@ export declare class AiModelError extends Error {
 
 The adapter maps its SDK's messages, usage, errors, and argument encoding to these types. If the SDK emits JSON strings for arguments, the adapter parses them once. Core validates the complete batch and requires each call to have JSON object arguments and a unique ID within the run. Schema violations for otherwise well-formed calls become tool result errors. The orchestrator invokes tools sequentially and associates each call with its result in the model messages. The adapter passes abort signals to the SDK where supported. It can throw `AiModelError` for known failure categories. Core maps other adapter exceptions to `MODEL_UNAVAILABLE` and discards raw exception details from client responses. Provider credentials and SDK types stay inside the adapter boundary.
 
-The chat model must declare `capabilities.toolCalling: true`. Each chat run discovers the tools eligible for the caller, and the model can choose to return a final answer. The optional `continuation` carries JSON data back to the adapter during a run. SDK adapters can use it for provider metadata required after a tool call. The orchestrator keeps it out of persisted conversations, logs, and responses. The chat loop consumes the final text field. The model contract reserves optional structured-output fields for future use, and `AiSdkModelAdapter` supports text and tool calls. The host can render application-specific data from tool callbacks. Streaming is planned separately.
+Each chat run discovers the tools eligible for the caller and includes them in generation requests. The model can request tool calls or return a final text answer. Attachment extraction and answer evaluation use empty tool lists. The optional `continuation` carries JSON data back to the adapter during a run. SDK adapters can use it for provider metadata required after a tool call. The orchestrator keeps it out of persisted conversations, logs, and responses. The host can render application-specific data from tool callbacks. Streaming is planned separately.
 
 The host selects accepted file types, validates upload contents, and maps each supported MIME type to a model through `attachmentModels`. The host applies any message and upload limits. Resumed chats replay all turns from the verified session. The orchestrator sends files to the corresponding attachment models with an empty tool list. When input screening is enabled, the orchestrator checks extracted text before using it as chat context. With persistence enabled, the notes become part of the saved user turn. [File inputs](../../../packages/core/README.md#process-images-and-pdfs)
 

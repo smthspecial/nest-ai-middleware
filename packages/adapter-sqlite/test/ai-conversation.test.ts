@@ -84,7 +84,6 @@ const context = { caller, contextId: ContextIdFactory.create() };
 it("recalls selected turns from other sessions for the same caller and keeps application tools available on a miss", async () => {
   const { module, ai } = await fixture({
     model: {
-      capabilities: { toolCalling: true },
       async generate({ messages, tools }) {
         const last = messages.at(-1);
         if (last?.role === "user" && last.content.startsWith("Save")) {
@@ -206,7 +205,6 @@ it("applies environment overrides to stored leases, transcript pages, previews a
       const { module, ai } = await fixture({
         database: { adapter },
         model: {
-          capabilities: { toolCalling: true },
           async generate({ messages }) {
             if (messages.at(-1)?.role === "tool")
               return { kind: "final", message: "Done" };
@@ -251,7 +249,6 @@ it("pages saved conversations across timestamp ties and excludes empty sessions"
   const signal = AbortSignal.timeout(5000);
   const { module, ai } = await fixture({
     model: {
-      capabilities: { toolCalling: true },
       async generate() {
         throw new Error("Unexpected model call");
       },
@@ -347,7 +344,7 @@ it("upgrades unversioned SQLite storage and resumes saved conversations and runs
       };
     });
     const first = await fixture({
-      model: { capabilities: { toolCalling: true }, generate },
+      model: { generate },
       filename: database.filename,
       logger,
     });
@@ -417,7 +414,7 @@ it("upgrades unversioned SQLite storage and resumes saved conversations and runs
       message: "It was 12.",
     }));
     const second = await fixture({
-      model: { capabilities: { toolCalling: true }, generate: followUp },
+      model: { generate: followUp },
       filename: database.filename,
       logger,
     });
@@ -645,7 +642,6 @@ it("uses one host-provided asynchronous adapter for history, run events, and aut
   }));
   const { ai, reader, module } = await fixture({
     model: {
-      capabilities: { toolCalling: true },
       generate,
     },
     database: { adapter },
@@ -706,7 +702,6 @@ it("continues the run and reports a sanitized error if a tool attempt cannot be 
     database: { adapter },
     logger: { log },
     model: {
-      capabilities: { toolCalling: true },
       async generate({ messages }) {
         if (messages.at(-1)?.role === "tool")
           return { kind: "final", message: "Report ready." };
@@ -759,7 +754,7 @@ it("blocks overlapping turns, releases failed runs, and loads all pages into the
   });
   const log = jest.fn<(event: AiLogEvent) => void>();
   const { ai, module } = await fixture({
-    model: { capabilities: { toolCalling: true }, generate },
+    model: { generate },
     logger: { log },
   });
   try {
@@ -831,7 +826,7 @@ it("shares one frozen caller snapshot between session ownership and history reca
     .mockResolvedValueOnce({ kind: "final", message: "No saved notes." });
   const { ai, module } = await fixture({
     database: { adapter },
-    model: { capabilities: { toolCalling: true }, generate },
+    model: { generate },
   });
   try {
     await expect(

@@ -114,7 +114,6 @@ async function createFixture(model: AiModel, settings: NodeJS.ProcessEnv = {}) {
 }
 
 const quietModel: AiModel = {
-  capabilities: { toolCalling: true },
   async generate() {
     return { kind: "final", message: "Report ready." };
   },
@@ -469,7 +468,6 @@ it.each([
   async (_label, result, toolWasAuthorized) => {
     let generated = 0;
     const { fixture, request, context, orchestrator } = await createFixture({
-      capabilities: { toolCalling: true },
       async generate() {
         generated++;
         return result;

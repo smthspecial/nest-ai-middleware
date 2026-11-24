@@ -10,11 +10,7 @@ import type {
   LanguageModelV4TextPart,
   SharedV4ProviderOptions,
 } from "@ai-sdk/provider";
-import {
-  readAiBooleanEnv,
-  readAiEnv,
-  readAiIntegerEnv,
-} from "../config/environment.js";
+import { readAiEnv, readAiIntegerEnv } from "../config/environment.js";
 import type {
   AiMessage,
   AiModel,
@@ -28,7 +24,6 @@ import { AiModelError } from "./ai-model-error.js";
 
 export interface AiSdkModelAdapterOptions {
   readonly instructions?: string;
-  readonly toolCalling?: boolean;
   readonly maxOutputTokens?: number;
   readonly providerOptions?: SharedV4ProviderOptions;
 }
@@ -163,7 +158,6 @@ export class AiSdkModelAdapter implements AiModel {
   private readonly maxOutputTokens: number;
   private readonly instructions: string | undefined;
   private readonly providerOptions: SharedV4ProviderOptions | undefined;
-  readonly capabilities: { readonly toolCalling: boolean };
 
   constructor(
     private readonly languageModel: LanguageModelV3 | LanguageModelV4,
@@ -183,20 +177,9 @@ export class AiSdkModelAdapter implements AiModel {
       readAiIntegerEnv("SDK_MAX_OUTPUT_TOKENS", 1024);
     this.instructions = options.instructions ?? readAiEnv("SDK_INSTRUCTIONS");
     this.providerOptions = options.providerOptions ?? readProviderOptions();
-    this.capabilities = Object.freeze({
-      toolCalling:
-        options.toolCalling ?? readAiBooleanEnv("SDK_TOOL_CALLING") ?? true,
-    });
   }
 
   async generate(request: AiModelRequest): Promise<AiModelResponse> {
-    if (
-      request.responseSchema ||
-      (!this.capabilities.toolCalling && request.tools.length)
-    ) {
-      throw new AiModelError("UNSUPPORTED_MODEL_CAPABILITY");
-    }
-
     const response = await this.callProvider(request);
     if (
       ["length", "content-filter", "error", "interrupted"].includes(
@@ -232,7 +215,7 @@ export class AiSdkModelAdapter implements AiModel {
           if (
             part.providerExecuted ||
             part.dynamic ||
-            !this.capabilities.toolCalling
+            request.tools.length === 0
           ) {
             throw new AiModelError("MODEL_PROTOCOL_ERROR");
           }

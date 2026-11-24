@@ -24,7 +24,6 @@ describe("AiSdkModelAdapter", () => {
   it("uses environment defaults and lets explicit SDK options override them", async () => {
     const env = jest.replaceProperty(process, "env", {
       ...process.env,
-      NEST_AI_SDK_TOOL_CALLING: "false",
       NEST_AI_SDK_MAX_OUTPUT_TOKENS: "42",
       NEST_AI_SDK_INSTRUCTIONS: "Answer briefly.",
       NEST_AI_SDK_PROVIDER_OPTIONS: '{"test":{"verbosity":"low"}}',
@@ -35,13 +34,10 @@ describe("AiSdkModelAdapter", () => {
         .mockRejectedValue(new Error("Provider unavailable"));
       const defaults = new AiSdkModelAdapter(sdkV3(generate));
       const explicit = new AiSdkModelAdapter(sdkV3(generate), {
-        toolCalling: true,
         instructions: "",
         maxOutputTokens: 64,
         providerOptions: {},
       });
-      expect(defaults.capabilities.toolCalling).toBe(false);
-      expect(explicit.capabilities.toolCalling).toBe(true);
       await expect(
         defaults.generate({ messages: [], tools: [] }),
       ).rejects.toMatchObject({ code: "MODEL_UNAVAILABLE" });
@@ -82,7 +78,6 @@ describe("AiSdkModelAdapter", () => {
       });
     const model = new AiSdkModelAdapter(sdkV3(generate), {
       instructions: "Write short answers.",
-      toolCalling: false,
       maxOutputTokens: 64,
       providerOptions: { test: { verbosity: "low" } },
     });
@@ -104,7 +99,6 @@ describe("AiSdkModelAdapter", () => {
       message: "Ready.",
       usage: { inputTokens: 7, outputTokens: 2 },
     });
-    expect(model.capabilities.toolCalling).toBe(false);
     expect(generate.mock.calls[0]?.[0]).toEqual({
       prompt: [
         { role: "system", content: "Write short answers." },
@@ -150,5 +144,34 @@ describe("AiSdkModelAdapter", () => {
       code: "MODEL_RATE_LIMITED",
       message: "MODEL_RATE_LIMITED",
     });
+  });
+
+  it("rejects a provider tool call when the request offers no tools", async () => {
+    const model = new AiSdkModelAdapter(
+      sdkV3(async () => ({
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "report-call",
+            toolName: "report",
+            input: "{}",
+          },
+        ],
+        finishReason: { unified: "tool-calls", raw: undefined },
+        usage: {
+          inputTokens: {
+            total: 2,
+            noCache: 2,
+            cacheRead: undefined,
+            cacheWrite: undefined,
+          },
+          outputTokens: { total: 1, text: 1, reasoning: undefined },
+        },
+        warnings: [],
+      })),
+    );
+    await expect(
+      model.generate({ messages: [], tools: [] }),
+    ).rejects.toMatchObject({ code: "MODEL_PROTOCOL_ERROR" });
   });
 });

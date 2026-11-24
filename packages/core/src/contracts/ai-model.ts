@@ -36,7 +36,6 @@ export interface AiModelRequest {
   readonly tools: readonly AiToolDefinition[];
   readonly attachments?: readonly AiAttachment[];
   readonly abortSignal?: AbortSignal;
-  readonly responseSchema?: JsonObject;
 }
 
 export interface AiUsage {
@@ -45,7 +44,7 @@ export interface AiUsage {
 }
 
 export type AiModelResponse = (
-  | { kind: "final"; message: string; structuredOutput?: unknown }
+  | { kind: "final"; message: string }
   | {
       kind: "tool-calls";
       message?: string;
@@ -56,10 +55,6 @@ export type AiModelResponse = (
 ) & { usage?: AiUsage };
 
 export interface AiModel {
-  readonly capabilities: {
-    readonly toolCalling: boolean;
-    readonly structuredOutput?: boolean;
-  };
   generate(request: AiModelRequest): Promise<AiModelResponse>;
 }
 

@@ -34,7 +34,6 @@ import { Module } from "@nestjs/common";
 import { AiModule, type AiModel } from "nestjs-ai-middleware";
 
 const model: AiModel = {
-  capabilities: { toolCalling: true },
   async generate() {
     return { kind: "final", message: "Offline model reply" };
   },
@@ -68,7 +67,6 @@ When migrating, move `promptSecurity`, `execution`, and local `attachmentStorage
 | `NEST_AI_ALLOW_WRITES`                   |                             `false` | Allows registration of create and update tools                                          |
 | `NEST_AI_ATTACHMENT_STORAGE_ENABLED`     |     Enabled when a directory is set | Enables the local attachment store                                                      |
 | `NEST_AI_ATTACHMENT_STORAGE_DIRECTORY`   | `./assets/attachments` when enabled | Directory for local attachment files                                                    |
-| `NEST_AI_SDK_TOOL_CALLING`               |                              `true` | Tool-calling capability for `AiSdkModelAdapter`                                         |
 | `NEST_AI_SDK_INSTRUCTIONS`               |                               Unset | System instructions for `AiSdkModelAdapter`                                             |
 | `NEST_AI_SDK_PROVIDER_OPTIONS`           |                               Unset | JSON object keyed by provider name, with an options object per provider                 |
 | `NEST_AI_SQLITE_FILENAME`                |                               Unset | Filename when `SqliteDatabaseAdapter` is constructed without one                        |
@@ -102,6 +100,8 @@ The lease must exceed the run deadline. When `NEST_AI_RUN_LEASE_MS` is omitted, 
 
 When upgrading, transfer existing tool authorization checks to Nest service guards and business methods. Remove the old `services`, `authorization`, and `selectConversationHistory` options and the old class, permission, and argument decorators. Declare tool inputs in `@AiTool()`. Replace any `argumentOrder` configuration with a method that takes one input object.
 
+Remove `capabilities` from custom models, the `toolCalling` option from `AiSdkModelAdapter`, and the `NEST_AI_SDK_TOOL_CALLING` environment variable. The model uses the tools supplied in each generation request.
+
 ### Use a Vercel AI SDK model
 
 Install the provider package in the host app, configure it, and pass the language model it creates to `AiSdkModelAdapter`. The adapter accepts `LanguageModelV4`, the provider interface used by AI SDK 7, and `LanguageModelV3` from earlier provider releases. [AI SDK provider versioning](https://github.com/vercel/ai/blob/main/contributing/pre-release-cycle.md).
@@ -123,15 +123,15 @@ AiModule.forRoot({
 
 Use the same constructor with a compatible model from `anthropic(modelId)` in `@ai-sdk/anthropic` or `ollama(modelId)` in `ollama-ai-provider-v2`. [OpenAI provider](https://ai-sdk.dev/providers/ai-sdk-providers/openai), [Anthropic provider](https://ai-sdk.dev/providers/ai-sdk-providers/anthropic), [Ollama providers](https://ai-sdk.dev/providers/community-providers/ollama).
 
-The chat model must declare `capabilities.toolCalling: true`. The middleware discovers the caller's eligible tools on every chat run, and the model can still answer from context or give a fallback. Attachment models can use `toolCalling: false`. You can also provide a custom `AiModel` or pass SDK-specific settings through `providerOptions`.
+The middleware sends the caller's eligible tools to the chat model on every run. The model can request a tool or return a final text answer. Attachment models and answer evaluators receive an empty tool list. Pass SDK-specific settings through `providerOptions`.
 
 ### Process images and PDFs
 
 Map each accepted full, lowercase MIME type to a file-capable SDK model in `attachmentModels`. Multiple types can share one model. The host decides which files it accepts, checks the file contents, and applies any upload limits.
 
 ```ts
-const image = new AiSdkModelAdapter(visionModel, { toolCalling: false });
-const pdf = new AiSdkModelAdapter(documentModel, { toolCalling: false });
+const image = new AiSdkModelAdapter(visionModel);
+const pdf = new AiSdkModelAdapter(documentModel);
 
 AiModule.forRoot({
   model,

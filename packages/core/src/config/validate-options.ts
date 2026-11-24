@@ -7,6 +7,7 @@ import type {
   AiDatabaseAdapter,
   AiDatabaseOptions,
 } from "../contracts/ai-database.js";
+import type { AiModel } from "../contracts/ai-model.js";
 import {
   readAiBooleanEnv,
   readAiEnv,
@@ -67,6 +68,12 @@ function validateDatabase(options: AiDatabaseOptions): AiDatabaseOptions {
   return Object.freeze({ adapter: options.adapter });
 }
 
+function validateModel(model: AiModel, label: string): void {
+  if (typeof model?.generate !== "function") {
+    throw new TypeError(`${label} must implement generate().`);
+  }
+}
+
 function validateAttachmentModels(
   options: AiAttachmentModels,
 ): AiAttachmentModels {
@@ -85,12 +92,7 @@ function validateAttachmentModels(
         "AiModule attachment model keys must be full lowercase MIME types.",
       );
     }
-    if (
-      typeof model?.generate !== "function" ||
-      typeof model.capabilities?.toolCalling !== "boolean"
-    ) {
-      throw new TypeError("Each attachment model must implement AiModel.");
-    }
+    validateModel(model, "Each attachment model");
   }
   return Object.freeze({ ...options });
 }
@@ -146,29 +148,9 @@ export function validateOptions(
     database,
     logger,
   } = options;
-  if (
-    typeof model?.generate !== "function" ||
-    model.capabilities?.toolCalling !== true
-  ) {
-    throw new TypeError(
-      "AiModule chat model must implement generate() and set capabilities.toolCalling to true.",
-    );
-  }
-  if (
-    model.capabilities.structuredOutput !== undefined &&
-    typeof model.capabilities.structuredOutput !== "boolean"
-  ) {
-    throw new TypeError(
-      "AiModule model capabilities.structuredOutput must be a boolean when supplied.",
-    );
-  }
-  if (
-    answerEvaluator !== undefined &&
-    (typeof answerEvaluator?.generate !== "function" ||
-      typeof answerEvaluator.capabilities?.toolCalling !== "boolean")
-  ) {
-    throw new TypeError("AiModule answerEvaluator must implement AiModel.");
-  }
+  validateModel(model, "AiModule chat model");
+  if (answerEvaluator !== undefined)
+    validateModel(answerEvaluator, "AiModule answerEvaluator");
   if ("authorization" in options) {
     throw new TypeError(
       "Move AiModule authorization checks into Nest service guards and business services before removing the authorization option.",
