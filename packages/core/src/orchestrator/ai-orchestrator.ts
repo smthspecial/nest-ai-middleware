@@ -24,6 +24,7 @@ import { withSignal } from "../executor/with-signal.js";
 import { AiRunBookkeeping } from "../logging/ai-run-bookkeeping.js";
 import { writeRunLog } from "../logging/run-logging.js";
 import { AiModelError } from "../model/ai-model-error.js";
+import { snapshotAiCaller } from "../security/ai-caller.js";
 import {
   AiPromptSecurity,
   AiSecurityError,
@@ -152,7 +153,8 @@ export class AiOrchestrator {
     context: AiExecutionContext,
     runOptions: AiRunOptions,
   ): PreparedRun {
-    if (!context.caller.subjectId.trim()) throw new AiToolError("DENIED");
+    const caller = snapshotAiCaller(context.caller);
+    if (!caller) throw new AiToolError("DENIED");
     if (typeof message !== "string") {
       throw new TypeError("Expected a text message.");
     }
@@ -181,11 +183,6 @@ export class AiOrchestrator {
       throw new AiConversationError("SESSION_UNAVAILABLE");
     }
 
-    const { subjectId, tenantId } = context.caller;
-    const caller = {
-      subjectId,
-      ...(tenantId !== undefined ? { tenantId } : {}),
-    };
     const runId = randomUUID();
     const { limits } = this.options;
     const timeout = AbortSignal.timeout(limits.runTimeoutMs);
@@ -196,7 +193,7 @@ export class AiOrchestrator {
     return {
       caller,
       runId,
-      invocation: { ...context, abortSignal: signal },
+      invocation: { ...context, caller, abortSignal: signal },
       question,
       history: conversationMessages(runOptions.history ?? []),
       attachments,

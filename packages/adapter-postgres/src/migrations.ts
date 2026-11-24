@@ -29,10 +29,9 @@ const migrations = [
 
 /** Run in a transaction on a single client. */
 export async function applyPostgresMigrations(
-  client: PostgresConnection,
+  client: Pick<PostgresConnection, "query">,
 ): Promise<void> {
-  // Read the migration history from a fresh snapshot after waiting for the lock.
-  await client.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+  // The caller uses READ COMMITTED so history is read after acquiring the lock.
   await client.query(
     "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('nest_ai_middleware'), pg_catalog.hashtext('schema_migrations'))",
   );

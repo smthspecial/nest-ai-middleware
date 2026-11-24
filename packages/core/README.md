@@ -95,6 +95,8 @@ When migrating, move `promptSecurity`, `execution`, and local `attachmentStorage
 | `NEST_AI_SQLITE_BUSY_TIMEOUT_MS`         |                                 100 | SQLite lock wait during regular use                                                     |
 | `NEST_AI_MONGODB_BOOKKEEPING_TIMEOUT_MS` |                                 100 | MongoDB driver deadline for bookkeeping writes                                          |
 | `NEST_AI_MONGODB_SESSION_TIMEOUT_MS`     |                                5000 | MongoDB driver deadline for session writes and transactions                             |
+| `NEST_AI_POSTGRES_OPERATION_TIMEOUT_MS`  |                                5000 | PostgreSQL runtime operation deadline and statement timeout ceiling                     |
+| `NEST_AI_POSTGRES_MIGRATION_TIMEOUT_MS`  |                               30000 | PostgreSQL initialization deadline and statement timeout ceiling                        |
 
 The lease must exceed the run deadline. When `NEST_AI_RUN_LEASE_MS` is omitted, the lease is at least 35000 ms and at least 5000 ms longer than the configured run timeout.
 

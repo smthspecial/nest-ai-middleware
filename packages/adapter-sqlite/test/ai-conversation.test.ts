@@ -811,3 +811,44 @@ it("blocks overlapping turns, releases failed runs, and loads all pages into the
     await module.close();
   }
 });
+
+it("shares one frozen caller snapshot between session ownership and history recall", async () => {
+  const adapter = new SqliteDatabaseAdapter(":memory:");
+  const begin = jest.spyOn(adapter, "beginConversation");
+  const search = jest.spyOn(adapter, "searchConversationTurns");
+  const generate = jest
+    .fn<AiModel["generate"]>()
+    .mockResolvedValueOnce({
+      kind: "tool-calls",
+      toolCalls: [
+        {
+          id: "search",
+          name: "nest_ai_search_history",
+          arguments: { keywords: ["forecast"] },
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ kind: "final", message: "No saved notes." });
+  const { ai, module } = await fixture({
+    database: { adapter },
+    model: { capabilities: { toolCalling: true }, generate },
+  });
+  try {
+    await expect(
+      ai.sendMessage("Check my forecast notes.", {
+        ...context,
+        caller: { ...caller, tenantId: {} as unknown as string },
+      }),
+    ).rejects.toMatchObject({ code: "DENIED" });
+
+    await ai.sendMessage("Check my forecast notes.", context);
+    const sessionCaller = begin.mock.calls[0][0].session.caller;
+    expect(sessionCaller).toEqual(caller);
+    expect(sessionCaller).not.toBe(caller);
+    expect(Object.isFrozen(sessionCaller)).toBe(true);
+    expect(search.mock.calls[0][0]).toBe(sessionCaller);
+  } finally {
+    await module.close();
+    adapter.close();
+  }
+});

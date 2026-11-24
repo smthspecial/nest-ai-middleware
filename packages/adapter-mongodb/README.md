@@ -12,6 +12,8 @@ const database = { adapter }; // Pass this to AiModule.forRoot() or forRootAsync
 
 `initialize()` applies pending migrations and records progress in `nest_ai_schema_migrations`. Existing collections are upgraded in place. Run initialization with a role that can manage middleware indexes and read and write the migration collection. You can run it as a deployment step before launching the app with a separate runtime role.
 
+Conversation ownership queries compare subject and tenant IDs using binary collation. Initialization ensures that the owner index supports those comparisons.
+
 Concurrent initializations wait up to 60 seconds for the migration lock. If the process holding it is terminated, confirm that the previous migration has stopped, then clear its `lockId` on the `_id: 'schema'` document in `nest_ai_schema_migrations` using a filter that matches the recorded `lockId`. Run `initialize()` again to resume from the last completed step.
 
 The host owns client connection, permissions, and shutdown. Use a replica set or sharded deployment so finalizing a conversation turn and releasing its lease can run in one transaction. [MongoDB driver transactions](https://www.mongodb.com/docs/drivers/node/current/crud/transactions/)

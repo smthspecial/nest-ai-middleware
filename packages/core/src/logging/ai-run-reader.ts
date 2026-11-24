@@ -6,6 +6,7 @@ import type { AiRunPage } from "../contracts/ai-database.js";
 import { isAiSessionId } from "../conversation/ai-conversation-error.js";
 import { AiDatabase } from "../database/ai-database.js";
 import { withSignal } from "../executor/with-signal.js";
+import { snapshotAiCaller } from "../security/ai-caller.js";
 
 export class AiRunReadError extends Error {
   readonly code = "STORE_UNAVAILABLE";
@@ -33,10 +34,11 @@ export class AiRunReader {
     if (!Number.isSafeInteger(after) || after < 0)
       throw new TypeError("Invalid run event cursor.");
     const adapter = this.database.adapter;
-    if (!adapter || !isAiSessionId(runId) || !caller.subjectId.trim()) return;
+    const owner = snapshotAiCaller(caller);
+    if (!adapter || !isAiSessionId(runId) || !owner) return;
     try {
       return await withSignal(signal, () =>
-        adapter.readRun(runId, caller, after, signal),
+        adapter.readRun(runId, owner, after, signal),
       );
     } catch {
       signal.throwIfAborted();

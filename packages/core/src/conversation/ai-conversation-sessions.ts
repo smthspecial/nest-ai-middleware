@@ -6,6 +6,7 @@ import type { AiCaller } from "../contracts/ai-execution-context.js";
 import type { AiDatabaseAdapter } from "../contracts/ai-database.js";
 import { AiDatabase } from "../database/ai-database.js";
 import { withSignal } from "../executor/with-signal.js";
+import { snapshotAiCaller } from "../security/ai-caller.js";
 import { AiConversationError, isAiSessionId } from "./ai-conversation-error.js";
 import type {
   AiConversationListPage,
@@ -38,7 +39,7 @@ export class AiConversationSessions {
     const store = this.requireStore();
     if (id !== undefined && !isAiSessionId(id))
       throw new AiConversationError("SESSION_UNAVAILABLE");
-    const session = { id: id ?? randomUUID(), caller };
+    const session = Object.freeze({ id: id ?? randomUUID(), caller });
     const create = id === undefined;
     const result = await this.fromStore(signal, () =>
       store.beginConversation(
@@ -121,14 +122,15 @@ export class AiConversationSessions {
     after = 0,
     signal = AbortSignal.timeout(this.options.limits.storeReadTimeoutMs),
   ): Promise<AiConversationPage> {
-    if (!isAiSessionId(id) || !caller.subjectId.trim())
+    const owner = snapshotAiCaller(caller);
+    if (!isAiSessionId(id) || !owner)
       throw new AiConversationError("SESSION_UNAVAILABLE");
     if (!Number.isSafeInteger(after) || after < 0)
       throw new TypeError("Invalid conversation cursor.");
     const { transcriptPageSize } = this.options.limits;
     const rows = await this.listTurns(
       this.requireStore(),
-      { id, caller },
+      { id, caller: owner },
       {
         order: "ascending",
         after,
@@ -150,8 +152,8 @@ export class AiConversationSessions {
     after?: string,
     signal = AbortSignal.timeout(this.options.limits.storeReadTimeoutMs),
   ): Promise<AiConversationListPage> {
-    if (!caller.subjectId.trim())
-      throw new AiConversationError("SESSION_UNAVAILABLE");
+    const owner = snapshotAiCaller(caller);
+    if (!owner) throw new AiConversationError("SESSION_UNAVAILABLE");
     const store = this.requireStore();
     const list = store.listConversations;
     if (!list) throw new AiConversationError("SESSION_UNAVAILABLE");
@@ -161,7 +163,7 @@ export class AiConversationSessions {
       ...(after === undefined ? {} : { before: this.parseListCursor(after) }),
     };
     const rows = await this.fromStore(signal, () =>
-      list.call(store, caller, query, signal),
+      list.call(store, owner, query, signal),
     );
     const conversations = rows.slice(0, conversationPageSize);
     const last = conversations.at(-1);

@@ -48,13 +48,27 @@ interface RunEventDocument {
 }
 
 const majority = { w: "majority" } as const;
+const binaryComparison = { collation: { locale: "simple" } } as const;
+
+function ownerFields(caller: AiCaller) {
+  const { subjectId, tenantId } = caller ?? {};
+  if (
+    typeof subjectId !== "string" ||
+    !subjectId.trim() ||
+    (tenantId !== undefined && typeof tenantId !== "string")
+  ) {
+    throw new TypeError("Invalid conversation owner.");
+  }
+  return { subjectId, tenantId: tenantId ?? null };
+}
+
+function ownerFilter(caller: AiCaller) {
+  const { subjectId, tenantId } = ownerFields(caller);
+  return { subjectId: { $eq: subjectId }, tenantId: { $eq: tenantId } };
+}
 
 function sessionOwner({ id, caller }: AiConversationSession) {
-  return {
-    _id: id,
-    subjectId: caller.subjectId,
-    tenantId: caller.tenantId ?? null,
-  };
+  return { _id: { $eq: id }, ...ownerFilter(caller) };
 }
 
 export class MongoDatabaseAdapter implements AiDatabaseAdapter {
@@ -116,24 +130,31 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
     signal: AbortSignal,
   ) {
     signal.throwIfAborted();
-    const owner = sessionOwner(session);
     if (create) {
       await this.sessions.insertOne(
-        { ...owner, turnCount: 0, leaseId: runId, leaseUntil },
+        {
+          _id: session.id,
+          ...ownerFields(session.caller),
+          turnCount: 0,
+          leaseId: runId,
+          leaseUntil,
+        },
         this.sessionOptions,
       );
       return { status: "ready" } as const;
     }
+    const owner = sessionOwner(session);
     const claim = await this.sessions.updateOne(
       {
         ...owner,
         $or: [{ leaseId: null }, { leaseUntil: { $lte: Date.now() } }],
       },
       { $set: { leaseId: runId, leaseUntil } },
-      this.sessionOptions,
+      { ...this.sessionOptions, ...binaryComparison },
     );
     if (claim.matchedCount) return { status: "ready" } as const;
     const exists = await this.sessions.findOne(owner, {
+      ...binaryComparison,
       projection: { _id: 1 },
       signal,
     });
@@ -151,7 +172,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
   ): Promise<void> {
     const lease = { ...sessionOwner(session), leaseId: runId };
     await this.transaction(signal, async (transaction) => {
-      const options = { session: transaction };
+      const options = { session: transaction, ...binaryComparison };
       const current = await this.sessions.findOne(lease, options);
       if (!current) {
         if (turn) throw new Error("Conversation lease is unavailable.");
@@ -199,6 +220,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
     signal.throwIfAborted();
     if (
       !(await this.sessions.findOne(sessionOwner(session), {
+        ...binaryComparison,
         projection: { _id: 1 },
         signal,
       }))
@@ -216,7 +238,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
               : {}),
           },
         },
-        { signal },
+        { signal, ...binaryComparison },
       )
       .sort({ position: descending ? -1 : 1 })
       .limit(query.limit)
@@ -235,8 +257,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
         [
           {
             $match: {
-              subjectId: caller.subjectId,
-              tenantId: caller.tenantId ?? null,
+              ...ownerFilter(caller),
               turnCount: { $gt: 0 },
             },
           },
@@ -306,7 +327,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
           { $sort: { updatedAt: -1, sessionId: -1 } },
           { $limit: limit },
         ],
-        { signal },
+        { signal, ...binaryComparison },
       )
       .toArray();
   }
@@ -336,8 +357,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
           {
             $match: {
               _id: { $ne: excludeSessionId },
-              subjectId: caller.subjectId,
-              tenantId: caller.tenantId ?? null,
+              ...ownerFilter(caller),
               turnCount: { $gt: 0 },
             },
           },
@@ -393,7 +413,7 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
             },
           },
         ],
-        { signal },
+        { signal, ...binaryComparison },
       )
       .toArray();
   }
@@ -470,24 +490,26 @@ export class MongoDatabaseAdapter implements AiDatabaseAdapter {
     signal: AbortSignal,
   ): Promise<AiRunPage | undefined> {
     signal.throwIfAborted();
-    const run = await this.runs.findOne({ _id: runId }, { signal });
+    const owner = ownerFilter(caller);
+    const options = { signal, ...binaryComparison };
+    const run = await this.runs.findOne({ _id: runId }, options);
     if (
       !run?.sessionId ||
       !(await this.sessions.findOne(
-        sessionOwner({ id: run.sessionId, caller }),
+        { _id: run.sessionId, ...owner },
         {
+          ...options,
           projection: { _id: 1 },
-          signal,
         },
       ))
     )
       return;
     const output = await this.turns.findOne(
       { _id: runId, sessionId: run.sessionId },
-      { projection: { assistant: 1 }, signal },
+      { ...options, projection: { assistant: 1 } },
     );
     const rows = await this.events
-      .find({ runId, sequence: { $gt: after } }, { signal })
+      .find({ runId, sequence: { $gt: after } }, options)
       .sort({ sequence: 1 })
       .limit(this.eventPageSize + 1)
       .toArray();

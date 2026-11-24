@@ -21,7 +21,7 @@ export interface PostgresConnection {
     text: string,
     values?: unknown[],
   ): Promise<Pick<QueryResult<Row>, "rows" | "rowCount">>;
-  release(): void;
+  release(discard?: boolean): void;
 }
 
 interface PostgresPool {
@@ -66,10 +66,21 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
     "CONVERSATION_PREVIEW_CHARS",
     120,
   );
+  private readonly operationTimeoutMs = readAiIntegerEnv(
+    "POSTGRES_OPERATION_TIMEOUT_MS",
+    5000,
+  );
+  private readonly migrationTimeoutMs = readAiIntegerEnv(
+    "POSTGRES_MIGRATION_TIMEOUT_MS",
+    30_000,
+  );
   constructor(private readonly pool: PostgresPool) {}
 
   async initialize(): Promise<void> {
-    await this.transaction(undefined, applyPostgresMigrations);
+    await this.transaction(undefined, applyPostgresMigrations, {
+      timeoutMs: this.migrationTimeoutMs,
+      readCommitted: true,
+    });
   }
 
   async beginConversation(
@@ -171,7 +182,7 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
     query: AiConversationTurnQuery,
     signal: AbortSignal,
   ): Promise<AiConversationTurnRecord[] | undefined> {
-    return this.withClient(signal, async (client) => {
+    return this.transaction(signal, async (client) => {
       const key = ownerKey(session);
       const { rowCount } = await client.query(
         `
@@ -211,7 +222,7 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
     { before, limit }: AiConversationListQuery,
     signal: AbortSignal,
   ): Promise<AiConversationSummary[]> {
-    return this.withClient(signal, async (client) => {
+    return this.transaction(signal, async (client) => {
       const { rows } = await client.query<{
         id: string;
         preview: string;
@@ -251,7 +262,7 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
     { excludeSessionId, keywords, limit }: AiConversationSearchQuery,
     signal: AbortSignal,
   ): Promise<AiConversationSearchMatch[]> {
-    return this.withClient(signal, async (client) => {
+    return this.transaction(signal, async (client) => {
       const { rows } = await client.query<{
         session_id: string;
         run_id: string;
@@ -350,7 +361,7 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
     after: number,
     signal: AbortSignal,
   ): Promise<AiRunPage | undefined> {
-    return this.withClient(signal, async (client) => {
+    return this.transaction(signal, async (client) => {
       const {
         rows: [run],
       } = await client.query<RunRow>(
@@ -396,38 +407,64 @@ export class PostgresDatabaseAdapter implements AiDatabaseAdapter {
     query: string,
     values: unknown[],
   ): Promise<void> {
-    await this.withClient(signal, (client) => client.query(query, values));
-  }
-
-  private async withClient<T>(
-    signal: AbortSignal | undefined,
-    work: (client: PostgresConnection) => Promise<T>,
-  ): Promise<T> {
-    signal?.throwIfAborted();
-    const client = await this.pool.connect();
-    try {
-      signal?.throwIfAborted();
-      return await work(client);
-    } finally {
-      client.release();
-    }
+    await this.transaction(signal, (client) => client.query(query, values));
   }
 
   private async transaction<T>(
     signal: AbortSignal | undefined,
-    work: (client: PostgresConnection) => Promise<T>,
+    work: (client: Pick<PostgresConnection, "query">) => Promise<T>,
+    { timeoutMs = this.operationTimeoutMs, readCommitted = false } = {},
   ): Promise<T> {
-    return this.withClient(signal, async (client) => {
-      await client.query("BEGIN");
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    deadline.throwIfAborted();
+
+    let active: PostgresConnection | undefined;
+    let discard = false;
+    const { promise: cancelled, reject } = Promise.withResolvers<never>();
+    const onAbort = () => reject(deadline.reason);
+    deadline.addEventListener("abort", onAbort, { once: true });
+
+    const operation = async () => {
+      const client = await this.pool.connect();
+      if (deadline.aborted) {
+        client.release();
+        deadline.throwIfAborted();
+      }
+      active = client;
+      const query: PostgresConnection["query"] = (text, values) => {
+        deadline.throwIfAborted();
+        return client.query(text, values);
+      };
+
       try {
-        const result = await work(client);
-        signal?.throwIfAborted();
-        await client.query("COMMIT");
+        await query(`
+          BEGIN${readCommitted ? " ISOLATION LEVEL READ COMMITTED" : ""};
+          SELECT pg_catalog.set_config(
+            'statement_timeout',
+            LEAST(${timeoutMs}, COALESCE(NULLIF(setting::integer, 0), ${timeoutMs}))::text,
+            true
+          ) FROM pg_catalog.pg_settings WHERE name = 'statement_timeout'
+        `);
+        const result = await work({ query });
+        await query("COMMIT");
         return result;
       } catch (error) {
-        await client.query("ROLLBACK");
+        if (!deadline.aborted) {
+          try {
+            await query("ROLLBACK");
+          } catch {
+            discard = true;
+          }
+        }
         throw error;
       }
-    });
+    };
+    try {
+      return await Promise.race([operation(), cancelled]);
+    } finally {
+      deadline.removeEventListener("abort", onAbort);
+      active?.release(deadline.aborted || discard);
+    }
   }
 }

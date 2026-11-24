@@ -32,6 +32,25 @@ const migrations = [
       .collection("nest_ai_chat_sessions")
       .createIndex({ subjectId: 1, tenantId: 1 });
   },
+  async (db: Db) => {
+    const sessions = db.collection("nest_ai_chat_sessions");
+    const indexes = await sessions.indexes();
+    const hasBinaryOwnerIndex = indexes.some(
+      ({ key, collation }) =>
+        Object.keys(key).join(",") === "subjectId,tenantId" &&
+        key.subjectId === 1 &&
+        key.tenantId === 1 &&
+        (!collation || collation.locale === "simple"),
+    );
+    if (hasBinaryOwnerIndex) return;
+    await sessions.createIndex(
+      { subjectId: 1, tenantId: 1 },
+      {
+        name: "subjectId_1_tenantId_1_binary",
+        collation: { locale: "simple" },
+      },
+    );
+  },
 ];
 
 /** Run against the primary with majority write concern. */
