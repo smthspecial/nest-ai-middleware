@@ -1,6 +1,6 @@
 {
   "name": "nestjs-ai-middleware-adapter-mongodb",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Mongodb storage adapter for NestJS AI middleware",
   "repository": {
     "type": "git",
@@ -31,10 +31,10 @@
     "publish:npm": "npm publish --access=public --registry=https://registry.npmjs.org/"
   },
   "peerDependencies": {
-    "nestjs-ai-middleware": "^0.3.1",
+    "nestjs-ai-middleware": "^0.3.2",
     "mongodb": "^7.9.0"
   },
   "devDependencies": {
-    "nestjs-ai-middleware": "0.3.1"
+    "nestjs-ai-middleware": "0.3.2"
   }
 }

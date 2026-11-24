@@ -1,6 +1,6 @@
 {
   "name": "nestjs-ai-middleware-adapter-postgres",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Postgres storage adapter for NestJS AI middleware",
   "repository": {
     "type": "git",
@@ -31,11 +31,11 @@
     "publish:npm": "npm publish --access=public --registry=https://registry.npmjs.org/"
   },
   "peerDependencies": {
-    "nestjs-ai-middleware": "^0.3.1",
+    "nestjs-ai-middleware": "^0.3.2",
     "pg": "^8.20.0"
   },
   "devDependencies": {
-    "nestjs-ai-middleware": "0.3.1"
+    "nestjs-ai-middleware": "0.3.2"
   },
   "dependencies": {
     "@types/pg": "^8.23.1"

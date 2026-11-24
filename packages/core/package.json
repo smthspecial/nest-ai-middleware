@@ -1,6 +1,6 @@
 {
   "name": "nestjs-ai-middleware",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Provider-independent AI middleware for NestJS applications",
   "keywords": [
     "nestjs",
